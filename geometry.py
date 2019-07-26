@@ -178,13 +178,22 @@ def draw3DPts(pcl_1, pcl_2=None):
         x1 = pcl_1_cpu[i, 0, :]
         y1 = pcl_1_cpu[i, 1, :]
         z1 = pcl_1_cpu[i, 2, :]
-        ax.plot3D(x1, y1, z1)
+
+        x1_ = x1[x1<200]
+        y1_ = y1[x1<200]
+        z1_ = z1[x1<200]
+        
+        ax.plot3D(x1_, y1_, z1_)
 
         if pcl_2 is not None:
             x2 = pcl_2_cpu[i, 0, :]
             y2 = pcl_2_cpu[i, 1, :]
             z2 = pcl_2_cpu[i, 2, :]
-            ax.plot3D(x2, y2, z2)
+
+            x2_ = x2[x2<200]
+            y2_ = y2[x2<200]
+            z2_ = z2[x2<200]
+            ax.plot3D(x2_, y2_, z2_)
         
         # plt.axis('equal')
     plt.show()

@@ -51,7 +51,7 @@ def process_dep_file(dep_file):
     dep_meter = dep_norm*1000
     dep_sudo_inv = 15/(dep_meter+15)
     # dep_sudo_inv_img = 255/np.amax(dep_sudo_inv) * dep_sudo_inv
-    return dep_sudo_inv
+    return dep_meter
 
 def process_rgb_file(img_file):
     img = skimage.io.imread(img_file)

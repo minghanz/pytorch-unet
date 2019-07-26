@@ -116,7 +116,7 @@ class innerProdLoss(nn.Module):
         v_grid = torch.Tensor(np.arange(height) )
         uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
         vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
-        uv1_grid = torch.stack( (torch.ones(uu_grid.size()).to(self.device), uu_grid.to(self.device), vv_grid.to(self.device) ), dim=0 ) # 3*N
+        uv1_grid = torch.stack( (uu_grid.to(self.device), vv_grid.to(self.device), torch.ones(uu_grid.size()).to(self.device) ), dim=0 ) # 3*N
         self.yz1_grid = torch.mm(inv_K, uv1_grid).to(self.device) # 3*N
         print(self.yz1_grid)
 

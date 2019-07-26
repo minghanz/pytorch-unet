@@ -15,7 +15,7 @@ import math
 def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     """
     This function generates 4*4 pose matrix in right-handed coordinate.
-    Source from CARLA follows a left-handed coordinate(front-right-up), but the definition of rotation is the same as in (front-up-down), 
+    Source from CARLA follows a left-handed coordinate(front-right-up), but the definition of rotation is the same as in (front-right-down), 
     which means that a rotation of the same value causes the object to rotate in the same way. It's just that the sign of coordinate
     is defined different. 
     """

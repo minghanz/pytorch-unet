@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from unet import UNet
 import numpy as np
+from dataloader import pose_from_euler_t
 
 def kern_mat(pcl_1, pcl_2):
     """
@@ -117,9 +118,26 @@ class innerProdLoss(nn.Module):
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans = torch.matmul(pose1_2, xyz2_homo)[:, 0:3, :] # B*3*N
 
-        pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
         gramian_feat = gramian(feature1, feature2)
+        pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
 
-        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) #, dim=(1,2)
+        diff_mode = True
+        if diff_mode:
+            trans_noise = np.random.normal(scale=1.0, size=(3,))
+            rot_noise = np.random.normal(scale=3.0, size=(3,))
+            pose1_2_noise = pose_from_euler_t(trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]).to(self.device)
+            pose1_2_noisy = torch.matmul(pose1_2, pose1_2_noise)
+            xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
+            pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy)
+
+            pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
+            inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat )
+
+            # inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) #, dim=(1,2)
+            # inner_neg_noisy = - torch.sum(pcl_diff_exp_noisy * gramian_feat ) #, dim=(1,2)
+            # inner_neg = inner_neg - inner_neg_noisy
+        else:
+            inner_neg = - torch.sum(pcl_diff_exp * gramian_feat )
+
 
         return inner_neg

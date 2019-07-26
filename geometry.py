@@ -3,6 +3,7 @@ import torch.nn as nn
 from unet import UNet
 import numpy as np
 from dataloader import pose_from_euler_t
+import matplotlib.pyplot as plt
 
 def kern_mat(pcl_1, pcl_2):
     """
@@ -121,6 +122,8 @@ class innerProdLoss(nn.Module):
         gramian_feat = gramian(feature1, feature2)
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
 
+        draw3DPts(xyz1, xyz2_trans)
+
         diff_mode = False
         if diff_mode:
             trans_noise = np.random.normal(scale=1.0, size=(3,))
@@ -142,3 +145,36 @@ class innerProdLoss(nn.Module):
 
 
         return inner_neg
+
+
+def draw3DPts(pcl_1, pcl_2=None):
+    """
+    pcl1 and pcl2 are B*3*N tensors, 3 for x, y, z
+    """
+    input_size_1 = list(pcl_1.size() )
+    B = input_size_1[0]
+    C = input_size_1[1]
+    N1 = input_size_1[2]
+    if pcl_2 is not None:
+        input_size_2 = list(pcl_2.size() )
+        N2 = input_size_2[2]
+
+    for i in range(B):
+        fig = plt.figure(i)
+        ax = fig.gca(projection='3d')
+        plt.cla()
+
+        x1 = pcl_1[i, 0, :]
+        y1 = pcl_1[i, 1, :]
+        z1 = pcl_1[i, 2, :]
+        x2 = pcl_2[i, 0, :]
+        y2 = pcl_2[i, 1, :]
+        z2 = pcl_2[i, 2, :]
+        
+        ax.plot3D(x1, y1, z1)
+        ax.plot3D(x2, y2, z2)
+        plt.axis('equal')
+    plt.show()
+    # plt.gca().set_aspect('equal')
+    # plt.gca().set_zlim(-10, 10)
+    # plt.gca().set_zlim(0, 3.5)

@@ -87,8 +87,8 @@ def main():
         model_path_save = os.path.join('saved_models', 'epoch{:0>2}_{:0>2}.pth'.format(1, i_epoch) )
         torch.save({
             'epoch': i_epoch,
-            'model_state_dict': model.state_dict(),
-            'loss_model_state_dict': loss_model.state_dict(),
+            'model_state_dict': model_overall.model_UNet.state_dict(),
+            'loss_model_state_dict': model_overall.model_loss.state_dict(),
             'optimizer_state_dict': optim.state_dict(),
             'loss': loss
             }, model_path_save)

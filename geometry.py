@@ -73,10 +73,10 @@ class UNetInnerProd(nn.Module):
         batch_norm=False,
         up_mode='upconv',
         device= torch.device('cuda'),
-        fx=56,
-        fy=56,
-        cx=56,
-        cy=42
+        fx=48,
+        fy=48,
+        cx=48,
+        cy=36
     ):
         super(UNetInnerProd, self).__init__()
         self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
@@ -95,7 +95,7 @@ class UNetInnerProd(nn.Module):
 
 
 class innerProdLoss(nn.Module):
-    def __init__(self, device, fx=56, fy=56, cx=56, cy=42):
+    def __init__(self, device, fx=48, fy=48, cx=48, cy=36):
         super(innerProdLoss, self).__init__()
         self.device = device
         height = int(2*cy)
@@ -121,11 +121,12 @@ class innerProdLoss(nn.Module):
         gramian_feat = gramian(feature1, feature2)
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
 
-        diff_mode = True
+        diff_mode = False
         if diff_mode:
             trans_noise = np.random.normal(scale=1.0, size=(3,))
             rot_noise = np.random.normal(scale=3.0, size=(3,))
-            pose1_2_noise = pose_from_euler_t(trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]).to(self.device)
+            pose1_2_noise = pose_from_euler_t(trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2])
+            pose1_2_noise = torch.Tensor(pose1_2_noise).to(self.device)
             pose1_2_noisy = torch.matmul(pose1_2, pose1_2_noise)
             xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
             pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy)

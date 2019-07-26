@@ -4,6 +4,7 @@ from unet import UNet
 import numpy as np
 from dataloader import pose_from_euler_t
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import axes3d, Axes3D
 
 def kern_mat(pcl_1, pcl_2):
     """
@@ -45,9 +46,9 @@ def gramian(feature1, feature2):
     gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2)
     return gramian
 
-def gen_3D(xy1_grid, depth1, depth2):
+def gen_3D(yz1_grid, depth1, depth2):
     """
-    depth1/2 are B*1*H*W, xy1_grid is 3*N(N=H*W)
+    depth1/2 are B*1*H*W, yz1_grid is 3*N(N=H*W)
     transform both to B*C(1 or 3)*N
     both outputs are B*3*N
     """
@@ -57,10 +58,10 @@ def gen_3D(xy1_grid, depth1, depth2):
 
     depth1_flat = depth1.reshape(-1, 1, n_pts_1).expand(-1, 3, -1) # B*3*N
     depth2_flat = depth2.reshape(-1, 1, n_pts_2).expand(-1, 3, -1)
-    xy1_grid_batch = xy1_grid.expand(batch_size, -1, -1) # B*3*N
+    yz1_grid_batch = yz1_grid.expand(batch_size, -1, -1) # B*3*N
     
-    xyz_1 = xy1_grid_batch * depth1_flat
-    xyz_2 = xy1_grid_batch * depth2_flat
+    xyz_1 = yz1_grid_batch * depth1_flat
+    xyz_2 = yz1_grid_batch * depth2_flat
 
     return xyz_1, xyz_2
 
@@ -101,21 +102,25 @@ class innerProdLoss(nn.Module):
         self.device = device
         height = int(2*cy)
         width = 2*cx
-        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ])
+        # K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ])
+        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ])
+        
         inv_K = torch.Tensor(np.linalg.inv(K)).to(self.device)
         K = torch.Tensor(K).to(self.device)
 
         u_grid = torch.Tensor(np.arange(width) )
         v_grid = torch.Tensor(np.arange(height) )
         uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
+        print(uu_grid)
         vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
-        uv1_grid = torch.stack( (uu_grid.to(self.device), vv_grid.to(self.device), torch.ones(uu_grid.size()).to(self.device) ), dim=0 ) # 3*N
-        self.xy1_grid = torch.mm(inv_K, uv1_grid).to(self.device) # 3*N
+        print(vv_grid)
+        uv1_grid = torch.stack( (torch.ones(uu_grid.size()).to(self.device), uu_grid.to(self.device), vv_grid.to(self.device) ), dim=0 ) # 3*N
+        self.yz1_grid = torch.mm(inv_K, uv1_grid).to(self.device) # 3*N
 
 
 
     def forward(self, feature1, feature2, depth1, depth2, pose1_2):
-        xyz1, xyz2 = gen_3D(self.xy1_grid, depth1, depth2)
+        xyz1, xyz2 = gen_3D(self.yz1_grid, depth1, depth2)
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans = torch.matmul(pose1_2, xyz2_homo)[:, 0:3, :] # B*3*N
 
@@ -159,21 +164,27 @@ def draw3DPts(pcl_1, pcl_2=None):
         input_size_2 = list(pcl_2.size() )
         N2 = input_size_2[2]
 
+    pcl_1_cpu = pcl_1.cpu().numpy()
+    if pcl_2 is not None:
+        pcl_2_cpu = pcl_2.cpu().numpy()
+    
     for i in range(B):
         fig = plt.figure(i)
         ax = fig.gca(projection='3d')
         plt.cla()
 
-        x1 = pcl_1[i, 0, :]
-        y1 = pcl_1[i, 1, :]
-        z1 = pcl_1[i, 2, :]
-        x2 = pcl_2[i, 0, :]
-        y2 = pcl_2[i, 1, :]
-        z2 = pcl_2[i, 2, :]
-        
+        x1 = pcl_1_cpu[i, 0, :]
+        y1 = pcl_1_cpu[i, 1, :]
+        z1 = pcl_1_cpu[i, 2, :]
         ax.plot3D(x1, y1, z1)
-        ax.plot3D(x2, y2, z2)
-        plt.axis('equal')
+
+        if pcl_2 is not None:
+            x2 = pcl_2_cpu[i, 0, :]
+            y2 = pcl_2_cpu[i, 1, :]
+            z2 = pcl_2_cpu[i, 2, :]
+            ax.plot3D(x2, y2, z2)
+        
+        # plt.axis('equal')
     plt.show()
     # plt.gca().set_aspect('equal')
     # plt.gca().set_zlim(-10, 10)

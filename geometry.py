@@ -5,6 +5,7 @@ import numpy as np
 from dataloader import pose_from_euler_t
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
+from geometry_plot import draw_pcls, np_batch_to_o3d_pcd
 
 def kern_mat(pcl_1, pcl_2):
     """
@@ -171,32 +172,20 @@ def draw3DPts(pcl_1, pcl_2=None):
         pcl_2_cpu = pcl_2.cpu().numpy()
     
     for i in range(B):
-        fig = plt.figure(i)
-        ax = fig.gca(projection='3d')
-        plt.cla()
+        # fig = plt.figure(i)
+        # ax = fig.gca(projection='3d')
+        # plt.cla()
 
-        x1 = pcl_1_cpu[i, 0, :]
-        y1 = pcl_1_cpu[i, 1, :]
-        z1 = pcl_1_cpu[i, 2, :]
-
-        x1_ = x1[x1<200]
-        y1_ = y1[x1<200]
-        z1_ = z1[x1<200]
-        
-        ax.plot3D(x1_, y1_, z1_)
+        pcd_o3d_1 = np_batch_to_o3d_pcd(pcl_1_cpu, i)
 
         if pcl_2 is not None:
-            x2 = pcl_2_cpu[i, 0, :]
-            y2 = pcl_2_cpu[i, 1, :]
-            z2 = pcl_2_cpu[i, 2, :]
+            pcd_o3d_2 = np_batch_to_o3d_pcd(pcl_2_cpu, i)
+            draw_pcls(pcd_o3d_1, pcd_o3d_2)
+        else:
+            draw_pcls(pcd_o3d_1)
 
-            x2_ = x2[x2<200]
-            y2_ = y2[x2<200]
-            z2_ = z2[x2<200]
-            ax.plot3D(x2_, y2_, z2_)
-        
         # plt.axis('equal')
-    plt.show()
+    # plt.show()
     # plt.gca().set_aspect('equal')
     # plt.gca().set_zlim(-10, 10)
     # plt.gca().set_zlim(0, 3.5)

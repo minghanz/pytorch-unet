@@ -28,4 +28,4 @@ def np_batch_to_o3d_pcd(np_batch, i):
     pcd.points = o3d.utility.Vector3dVector(xyz1_)
     # o3d.io.write_point_cloud("../../TestData/sync.ply", pcd)
 
-    return xyz1_
+    return pcd

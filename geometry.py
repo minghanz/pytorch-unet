@@ -61,11 +61,12 @@ def gen_3D(yz1_grid, depth1, depth2):
     depth2_flat = depth2.reshape(-1, 1, n_pts_2).expand(-1, 3, -1)
     yz1_grid_batch = yz1_grid.expand(batch_size, -1, -1) # B*3*N
 
+    print('depth1')
     print(depth1)
     
     xyz_1 = yz1_grid_batch * depth1_flat
     xyz_2 = yz1_grid_batch * depth2_flat
-
+    print('xyz_1')
     print(xyz_1)
 
     return xyz_1, xyz_2
@@ -119,6 +120,7 @@ class innerProdLoss(nn.Module):
         vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
         uv1_grid = torch.stack( (uu_grid.to(self.device), vv_grid.to(self.device), torch.ones(uu_grid.size()).to(self.device) ), dim=0 ) # 3*N
         self.yz1_grid = torch.mm(inv_K, uv1_grid).to(self.device) # 3*N
+        print('self.yz1_grid')        
         print(self.yz1_grid)
 
 

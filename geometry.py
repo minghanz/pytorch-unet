@@ -44,11 +44,11 @@ def gramian(feature1, feature2, sparse_mode):
     fea_norm_sum_2 = torch.sum(fea_norm_2)
     
     if not sparse_mode:
-        fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) )
-        fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) )
+        fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
+        fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
     
     
-    gramian = torch.sqrt( torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) )
+    gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
     return gramian, fea_norm_sum_1 + fea_norm_sum_2
 
 def gen_3D(yz1_grid, depth1, depth2):
@@ -143,9 +143,9 @@ class UNetInnerProd(nn.Module):
         dep2.requires_grad = False
         pose1_2.requires_grad = False
 
-        loss = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
+        loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
 
-        return feature1, feature2, loss
+        return feature1, feature2, loss, innerp_loss, feat_norm
 
 
 class innerProdLoss(nn.Module):
@@ -193,6 +193,7 @@ class innerProdLoss(nn.Module):
         # draw3DPts(xyz1, xyz2_trans, img1_flat, img2_flat)
         # draw3DPts(xyz1, xyz2, img1_flat, img2_flat)
 
+        fea_norm_sum = fea_norm_sum *1e2
         if self.diff_mode:
             pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
             xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
@@ -200,8 +201,9 @@ class innerProdLoss(nn.Module):
 
             pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
             inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat )
+            final_loss = inner_neg
             if self.sparse_mode:
-                inner_neg += fea_norm_sum
+                final_loss = inner_neg + fea_norm_sum
 
             # draw3DPts(xyz1, xyz2_trans_noisy, img1_flat, img2_flat)
 
@@ -210,8 +212,9 @@ class innerProdLoss(nn.Module):
             # inner_neg = inner_neg - inner_neg_noisy
         else:
             inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) 
+            final_loss = inner_neg
             if self.sparse_mode:
-                inner_neg += fea_norm_sum
+                final_loss = inner_neg + fea_norm_sum
 
-        return inner_neg
+        return final_loss, inner_neg, fea_norm_sum
 

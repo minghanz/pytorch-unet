@@ -59,10 +59,11 @@ class UNet(nn.Module):
             )
             prev_channels = 2 ** (wf + i)
 
-        block = []
-        block.append(nn.Conv2d(prev_channels, n_classes, kernel_size=1))
-        block.append(nn.ReLU())
-        self.last = nn.Sequential(*block)
+        # block = []
+        # block.append(nn.Conv2d(prev_channels, n_classes, kernel_size=1))
+        # block.append(nn.ReLU())
+        # self.last = nn.Sequential(*block)
+        self.last = nn.Conv2d(prev_channels, n_classes, kernel_size=1)
 
     def forward(self, x):
         blocks = []

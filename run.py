@@ -12,14 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 from geometry import UNetInnerProd, innerProdLoss
 
-    
-# class innerProdLossFunc(Function):
-
-#     @staticmethod
-#     def forward(ctx, feature1, feature2, depth1, depth2, pose1_2, xy1_grid):
-    
-
-
 def main():
 
     print('Cuda available?', torch.cuda.is_available())
@@ -29,8 +21,9 @@ def main():
     # loss_model = innerProdLoss(device=device).to(device)
     # optim = torch.optim.Adam(model.parameters())
 
-    model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device)
-    optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=1e-5) #cefault 1e-3
+    diff_mode = True
+    model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device, diff_mode=diff_mode)
+    optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=1e-4) #cefault 1e-3
 
     img_pose_dataset = ImgPoseDataset(transform=transforms.Compose([Rescale(), ToTensor(device=device) ]) )
     data_to_load = DataLoader(img_pose_dataset, batch_size=3, shuffle=True)
@@ -57,7 +50,8 @@ def main():
             # dep2.requires_grad = False
 
             # loss = loss_model(feature1, feature2, dep1, dep2, pose1_2)
-
+            if diff_mode:
+                model_overall.model_loss.gen_rand_pose()
             feature1, feature2, loss = model_overall(img1, img2, dep1, dep2, pose1_2)
 
             if iter_overall == 0:
@@ -82,6 +76,10 @@ def main():
             optim.step()
             if i_batch %100 == 0:
                 print('batch', i_batch, 'finished')
+            if i_batch ==2000:
+                for g in optim.param_groups:
+                    g['lr'] = g['lr'] * 0.1
+                print('learning rate 0.1')
             iter_overall += 1
 
         model_path_save = os.path.join('saved_models', 'epoch{:0>2}_{:0>2}.pth'.format(1, i_epoch) )

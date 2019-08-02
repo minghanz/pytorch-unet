@@ -152,8 +152,6 @@ class ImgPoseDataset(Dataset):
             lines_pose = file_pose.readlines()
 
             print(len(paths_img))
-            print(len(files_dep))
-            print(len(lines_pose))
 
             assert (len(paths_img) == len(paths_dep) and len(paths_img) <= len(lines_pose) ), "the number of files aren't aligned!"
             

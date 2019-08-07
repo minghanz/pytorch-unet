@@ -12,6 +12,27 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 from geometry import UNetInnerProd, innerProdLoss
 
+def vis_feat(feature, neg=False):
+    # only keep the positive or negative part of the feature map, normalize the max to 1 
+    # (removing border part because they sometimes are too large)
+
+    if neg:
+        feat1_pos = -feature.clone().detach()
+        feat1_pos[feature > 0] = 0
+    else:
+        feat1_pos = feature.clone().detach()
+        feat1_pos[feature < 0] = 0
+    feat1_pos[:,:,0:5,:] = 0
+    feat1_pos[:,:,feat1_pos.shape[2]-5:feat1_pos.shape[2],:] = 0
+    feat1_pos[:,:,:,0:5] = 0
+    feat1_pos[:,:,:,feat1_pos.shape[3]-5:feat1_pos.shape[3]] = 0
+    
+    feat1_pos_max = torch.max(feat1_pos)
+    if feat1_pos_max > 0:
+        feat1_pos = feat1_pos / feat1_pos_max
+
+    return feat1_pos
+
 def main():
 
     print('Cuda available?', torch.cuda.is_available())
@@ -75,6 +96,35 @@ def main():
             writer.add_scalar('max_fea_1', max_fea_1, iter_overall)
             writer.add_scalar('max_fea_2', max_fea_2, iter_overall)
 
+            
+            # to normalize feature map to max 1 for better visualization
+            # if torch.abs(min_fea_1) > torch.abs(max_fea_1):
+            #     max_abs_1 = torch.abs(min_fea_1)
+            # else:
+            #     max_abs_1 = torch.abs(max_fea_1)
+            # if torch.abs(min_fea_2) > torch.abs(max_fea_2):
+            #     max_abs_2 = torch.abs(min_fea_2)
+            # else:
+            #     max_abs_2 = torch.abs(max_fea_2) 
+            # feature1  = feature1 / max_abs_1
+            # feature2  = feature2 / max_abs_2
+
+            # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
+            feat1_pos = vis_feat(feature1)
+            feat1_neg = vis_feat(feature1, neg=True)
+            feat2_pos = vis_feat(feature2)
+            feat2_neg = vis_feat(feature2, neg=True)
+
+            grid1pos = torchvision.utils.make_grid(feat1_pos)
+            grid1neg = torchvision.utils.make_grid(feat1_neg)
+            grid2pos = torchvision.utils.make_grid(feat2_pos)
+            grid2neg = torchvision.utils.make_grid(feat2_neg)
+
+            writer.add_image('feature1_pos',grid1pos, iter_overall)
+            writer.add_image('feature1_neg',grid1neg, iter_overall)
+            writer.add_image('feature2_pos',grid2pos, iter_overall)
+            writer.add_image('feature2_neg',grid2neg, iter_overall)
+
             feature1  = feature1 / max_fea_1
             feature2  = feature2 / max_fea_2
             
@@ -83,6 +133,16 @@ def main():
 
             writer.add_image('feature1',grid1fea, iter_overall)
             writer.add_image('feature2',grid2fea, iter_overall)
+
+            
+            # feat_test=feature1.clone().detach()
+            # feat_test[:,:,:,:] = 0
+            # feat_test[:,:,0:10, :] = 0.2
+            # feat_test[:,:,10:20, :] = 0.1
+            # # feat_test[:,:,20:30, :] = 1.8
+            # # feat_test[:,:,30:40, :] = -1.1
+            # grid_test= torchvision.utils.make_grid(feat_test)
+            # writer.add_image('feature_test',grid_test, iter_overall)
 
             writer.add_scalar('loss', loss, iter_overall)
             writer.add_scalar('innerp_loss', innerp_loss, iter_overall)

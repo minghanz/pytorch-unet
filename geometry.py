@@ -192,8 +192,10 @@ class innerProdLoss(nn.Module):
         
         # draw3DPts(xyz1, xyz2_trans, img1_flat, img2_flat)
         # draw3DPts(xyz1, xyz2, img1_flat, img2_flat)
-
-        fea_norm_sum = fea_norm_sum *1e2
+        if self.diff_mode:
+            fea_norm_sum = fea_norm_sum *1e2
+        else: 
+            fea_norm_sum = fea_norm_sum *1e3
         if self.diff_mode:
             pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
             xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N

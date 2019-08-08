@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from geometry_plot import draw_pcls, np_batch_to_o3d_pcd
 
-def kern_mat(pcl_1, pcl_2):
+def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     """
     pcl1 and pcl2 are B*3*N tensors, 3 for x, y, z
     output is B*N1*N2
@@ -18,13 +18,46 @@ def kern_mat(pcl_1, pcl_2):
     C = input_size_1[1]
     N1 = input_size_1[2]
     N2 = input_size_2[2]
-    pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
-    pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)
-    pcl_diff_exp = torch.exp(-torch.norm(pcl_1_expand - pcl_2_expand, dim=1) * 1e-1  ) # B*N1*N2 
+    if N1%4 ==0 and N2%2==0 : # N1%4 ==0 and N2%2==0 
+        N1_split = int(N1/4)
+        N2_split = int(N2/2)
+        pcl_2_expand_1 = pcl_2[:,:,0:N2_split].unsqueeze(-2).expand(B, C, N1_split, N2_split)
+        pcl_2_expand_2 = pcl_2[:,:,N2_split:2*N2_split].unsqueeze(-2).expand(B, C, N1_split, N2_split)
+
+        pcl_1_expand_1 = pcl_1[:,:,0:N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
+        pcl_1_expand_2 = pcl_1[:,:,N1_split:2*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
+        pcl_1_expand_3 = pcl_1[:,:,2*N1_split:3*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
+        pcl_1_expand_4 = pcl_1[:,:,3*N1_split:4*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
+
+        pcl_diff_exp_11 = torch.exp(-torch.norm(pcl_1_expand_1 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
+
+        pcl_diff_exp_21 = torch.exp(-torch.norm(pcl_1_expand_2 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
+        
+        pcl_diff_exp_31 = torch.exp(-torch.norm(pcl_1_expand_3 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
+
+        pcl_diff_exp_41 = torch.exp(-torch.norm(pcl_1_expand_4 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
+
+        pcl_diff_exp_12 = torch.exp(-torch.norm(pcl_1_expand_1 - pcl_2_expand_2, dim=1) * dist_coef  ) # B*N1*N2 
+
+        pcl_diff_exp_22 = torch.exp(-torch.norm(pcl_1_expand_2 - pcl_2_expand_2, dim=1) * dist_coef  ) # B*N1*N2 
+        
+        pcl_diff_exp_32 = torch.exp(-torch.norm(pcl_1_expand_3 - pcl_2_expand_2, dim=1) * dist_coef  ) # B*N1*N2 
+
+        pcl_diff_exp_42 = torch.exp(-torch.norm(pcl_1_expand_4 - pcl_2_expand_2, dim=1) * dist_coef  ) # B*N1*N2 
+        
+        pcl_diff_exp_1 = torch.cat((pcl_diff_exp_11, pcl_diff_exp_21, pcl_diff_exp_31, pcl_diff_exp_41), dim=1)
+        pcl_diff_exp_2 = torch.cat((pcl_diff_exp_12, pcl_diff_exp_22, pcl_diff_exp_32, pcl_diff_exp_42), dim=1)
+        
+        pcl_diff_exp = torch.cat((pcl_diff_exp_1, pcl_diff_exp_2), dim=2)
+
+    else:
+        pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
+        pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)
+        pcl_diff_exp = torch.exp(-torch.norm(pcl_1_expand - pcl_2_expand, dim=1) * dist_coef  ) # B*N1*N2 
 
     return pcl_diff_exp
 
-def gramian(feature1, feature2, sparse_mode):
+def gramian(feature1, feature2, norm_mode, kernalize, L2_norm):
     """inputs are B*C*H*W tensors, C corresponding to feature dimension (default 3)
     output is B*N1*N2
     """
@@ -37,18 +70,28 @@ def gramian(feature1, feature2, sparse_mode):
     fea_flat_1 = feature1.reshape(batch_size, channels, n_pts_1) # B*C*N1
     fea_flat_2 = feature2.reshape(batch_size, channels, n_pts_2) # B*C*N2
 
-    fea_norm_1 = torch.norm(fea_flat_1, dim=1)
-    fea_norm_2 = torch.norm(fea_flat_2, dim=1)
+    if L2_norm:
+        fea_norm_1 = torch.norm(fea_flat_1, dim=1)
+        fea_norm_2 = torch.norm(fea_flat_2, dim=1)
 
-    fea_norm_sum_1 = torch.sum(fea_norm_1)
-    fea_norm_sum_2 = torch.sum(fea_norm_2)
+        fea_norm_sum_1 = torch.sum(fea_norm_1)
+        fea_norm_sum_2 = torch.sum(fea_norm_2)
+    else:
+        fea_norm_sum_1 = torch.abs(torch.sum(fea_flat_1))
+        fea_norm_sum_2 = torch.abs(torch.sum(fea_flat_2))
     
-    if not sparse_mode:
+    if norm_mode == 1:
         fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
         fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
+    elif norm_mode == 2:
+        fea_flat_1 = fea_flat_1 /255.0
+        fea_flat_2 = fea_flat_2 /255.0
     
-    
-    gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
+    if not kernalize:
+        gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
+    else:
+        gramian = kern_mat(fea_flat_1, fea_flat_2, dist_coef=1e1)
+
     return gramian, fea_norm_sum_1 + fea_norm_sum_2
 
 def gen_3D(yz1_grid, depth1, depth2):
@@ -129,11 +172,14 @@ class UNetInnerProd(nn.Module):
         cx=48,
         cy=36, 
         diff_mode=True,
-        sparse_mode=False
+        sparse_mode=False,
+        kernalize=False,
+        color_in_cost=False, 
+        L2_norm=True
     ):
         super(UNetInnerProd, self).__init__()
         self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
-        self.model_loss = innerProdLoss(device, fx, fy, cx, cy, diff_mode, sparse_mode).to(device)
+        self.model_loss = innerProdLoss(device, fx, fy, cx, cy, diff_mode, sparse_mode, kernalize, color_in_cost, L2_norm).to(device)
 
     def forward(self, img1, img2, dep1, dep2, pose1_2):
         feature1 = self.model_UNet(img1)
@@ -149,7 +195,7 @@ class UNetInnerProd(nn.Module):
 
 
 class innerProdLoss(nn.Module):
-    def __init__(self, device, fx=48, fy=48, cx=48, cy=36, diff_mode=True, sparse_mode=False):
+    def __init__(self, device, fx=48, fy=48, cx=48, cy=36, diff_mode=True, sparse_mode=False, kernalize=False, color_in_cost=False, L2_norm=True):
         super(innerProdLoss, self).__init__()
         self.device = device
         height = int(2*cy)
@@ -168,6 +214,9 @@ class innerProdLoss(nn.Module):
         self.yz1_grid = torch.mm(inv_K, uv1_grid).to(self.device) # 3*N
         self.diff_mode = diff_mode
         self.sparse_mode = sparse_mode
+        self.kernalize = kernalize
+        self.color_in_cost = color_in_cost
+        self.L2_norm = L2_norm
 
     def gen_rand_pose(self):
         trans_noise = np.random.normal(scale=1.0, size=(3,))
@@ -181,8 +230,15 @@ class innerProdLoss(nn.Module):
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans = torch.matmul(pose1_2, xyz2_homo)[:, 0:3, :] # B*3*N
 
-        gramian_feat, fea_norm_sum = gramian(feature1, feature2, self.sparse_mode)
+        if self.sparse_mode:
+            normalization_mode = 0
+        else:
+            normalization_mode = 1
+        gramian_feat, fea_norm_sum = gramian(feature1, feature2, normalization_mode, kernalize=self.kernalize, L2_norm=self.L2_norm)
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
+
+        if self.color_in_cost:
+            gramian_color, _ = gramian(img1, img2, norm_mode=2, kernalize=self.kernalize, L2_norm=False)
 
         n_pts_1 = img1.shape[2]*img1.shape[3]
         n_pts_2 = img2.shape[2]*img2.shape[3]
@@ -202,7 +258,12 @@ class innerProdLoss(nn.Module):
             pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy)
 
             pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
-            inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat )
+
+            if self.color_in_cost:
+                inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color )
+            else:
+                inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat )
+
             final_loss = inner_neg
             if self.sparse_mode:
                 final_loss = inner_neg + fea_norm_sum
@@ -213,7 +274,11 @@ class innerProdLoss(nn.Module):
             # inner_neg_noisy = - torch.sum(pcl_diff_exp_noisy * gramian_feat ) #, dim=(1,2)
             # inner_neg = inner_neg - inner_neg_noisy
         else:
-            inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) 
+            if self.color_in_cost:
+                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
+            else:
+                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) 
+
             final_loss = inner_neg
             if self.sparse_mode:
                 final_loss = inner_neg + fea_norm_sum

@@ -36,7 +36,7 @@ def vis_feat(feature, neg=False):
 def main():
 
     print('Cuda available?', torch.cuda.is_available())
-    device = torch.device('cuda' if torch.cuda.is_available()else 'cpu')
+    device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
 
     # model = UNet(in_channels=3, n_classes=3, depth=3, wf=4, padding=True).to(device)
     # loss_model = innerProdLoss(device=device).to(device)
@@ -44,12 +44,16 @@ def main():
 
     diff_mode = True
     sparse_mode = True
-    model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device, diff_mode=diff_mode, sparse_mode=sparse_mode)
+    kernalize = True
+    color_in_cost = True
+    L2_norm = False
+    model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device, 
+                                    diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm)
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
     img_pose_dataset = ImgPoseDataset(transform=transforms.Compose([Rescale(), ToTensor(device=device) ]) )
-    data_to_load = DataLoader(img_pose_dataset, batch_size=3, shuffle=True)
+    data_to_load = DataLoader(img_pose_dataset, batch_size=2, shuffle=True)
 
     epochs = 10
 
@@ -127,7 +131,7 @@ def main():
 
             feature1  = feature1 / max_fea_1
             feature2  = feature2 / max_fea_2
-            
+
             grid1fea = torchvision.utils.make_grid(feature1)
             grid2fea = torchvision.utils.make_grid(feature2)
 

@@ -77,15 +77,15 @@ def gramian(feature1, feature2, norm_mode, kernalize, L2_norm):
         fea_norm_sum_1 = torch.sum(fea_norm_1)
         fea_norm_sum_2 = torch.sum(fea_norm_2)
     else:
-        fea_norm_sum_1 = torch.abs(torch.sum(fea_flat_1))
-        fea_norm_sum_2 = torch.abs(torch.sum(fea_flat_2))
+        fea_norm_sum_1 = torch.sum(torch.abs(fea_flat_1))
+        fea_norm_sum_2 = torch.sum(torch.abs(fea_flat_2))
     
     if norm_mode == 1:
         fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
         fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
     elif norm_mode == 2:
-        fea_flat_1 = fea_flat_1 /255.0
-        fea_flat_2 = fea_flat_2 /255.0
+        fea_flat_1 = fea_flat_1 /100.0
+        fea_flat_2 = fea_flat_2 /100.0
     
     if not kernalize:
         gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
@@ -238,7 +238,7 @@ class innerProdLoss(nn.Module):
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans)
 
         if self.color_in_cost:
-            gramian_color, _ = gramian(img1, img2, norm_mode=2, kernalize=self.kernalize, L2_norm=False)
+            gramian_color, _ = gramian(img1, img2, norm_mode=0, kernalize=self.kernalize, L2_norm=False)
 
         n_pts_1 = img1.shape[2]*img1.shape[3]
         n_pts_2 = img2.shape[2]*img2.shape[3]
@@ -248,10 +248,17 @@ class innerProdLoss(nn.Module):
         
         # draw3DPts(xyz1, xyz2_trans, img1_flat, img2_flat)
         # draw3DPts(xyz1, xyz2, img1_flat, img2_flat)
-        if self.diff_mode:
-            fea_norm_sum = fea_norm_sum *1e2
-        else: 
-            fea_norm_sum = fea_norm_sum *1e3
+        if self.L2_norm:
+            if self.diff_mode:
+                fea_norm_sum = fea_norm_sum *1e2
+            else: 
+                fea_norm_sum = fea_norm_sum *1e3
+        else:
+            if self.diff_mode:
+                fea_norm_sum = fea_norm_sum *1e3
+            else: 
+                fea_norm_sum = fea_norm_sum *1e4
+
         if self.diff_mode:
             pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
             xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N

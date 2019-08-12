@@ -44,8 +44,8 @@ def main():
 
     diff_mode = True
     sparse_mode = True
-    kernalize = True
-    color_in_cost = True
+    kernalize = False
+    color_in_cost = False
     L2_norm = False
     model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device, 
                                     diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm)

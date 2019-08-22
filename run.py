@@ -47,12 +47,15 @@ def main():
     kernalize = False
     color_in_cost = False
     L2_norm = False
-    model_overall = UNetInnerProd(in_channels=3, n_classes=3, depth=3, wf=4, padding=True, device=device, 
-                                    diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm)
+    width = 96 # (72*96)
+    height = 72
+    model_overall = UNetInnerProd(in_channels=3, n_classes=64, depth=3, wf=4, padding=True, device=device, 
+                                    diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm, 
+                                    fx=int(width/2), fy=int(width/2), cx=int(width/2), cy=int(height/2) )
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
-    img_pose_dataset = ImgPoseDataset(transform=transforms.Compose([Rescale(), ToTensor(device=device) ]) )
+    img_pose_dataset = ImgPoseDataset(transform=transforms.Compose([Rescale(output_size=(height,width)), ToTensor(device=device) ]) )
     data_to_load = DataLoader(img_pose_dataset, batch_size=2, shuffle=True)
 
     epochs = 10
@@ -80,7 +83,10 @@ def main():
             # loss = loss_model(feature1, feature2, dep1, dep2, pose1_2)
             if diff_mode:
                 model_overall.model_loss.gen_rand_pose()
-            feature1, feature2, loss, innerp_loss, feat_norm = model_overall(img1, img2, dep1, dep2, pose1_2)
+            feature1_full, feature2_full, loss, innerp_loss, feat_norm = model_overall(img1, img2, dep1, dep2, pose1_2)
+
+            feature1 = feature1_full[:,0:3,:,:]
+            feature2 = feature2_full[:,0:3,:,:]
 
             if iter_overall == 0:
                 writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,pose1_2) )

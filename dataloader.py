@@ -98,7 +98,7 @@ class Rescale(object):
             to output_size keeping aspect ratio the same.
     """
 
-    def __init__(self, output_size=(72, 96)):
+    def __init__(self, output_size=(72, 96)): # 72, 96
         assert isinstance(output_size, (int, tuple))
         self.output_size = output_size
 

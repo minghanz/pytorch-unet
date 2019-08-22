@@ -5,7 +5,35 @@ import numpy as np
 from dataloader import pose_from_euler_t
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
-from geometry_plot import draw_pcls, np_batch_to_o3d_pcd
+from geometry_plot import draw3DPts
+
+import sub_cuda
+import sub_norm_cuda
+from torch.autograd import Function
+
+class SubNormFunction(Function):
+    @staticmethod
+    def forward(ctx, x1, x2):
+        outputs = sub_norm_cuda.forward(x1, x2)
+        ctx.save_for_backward(x1, x2)
+        return outputs
+
+    @staticmethod
+    def backward(ctx, dy):
+        x1, x2 = ctx.saved_tensors
+        dx1, dx2 = sub_norm_cuda.backward(dy.to(torch.device('cuda:1')), x1.to(torch.device('cuda:1')), x2.to(torch.device('cuda:1')))
+        return dx1.to(torch.device('cuda:1')), dx2.to(torch.device('cuda:1'))
+
+# class SubFunction(Function):
+#     @staticmethod
+#     def forward(ctx, x1, x2):
+#         outputs = sub_cuda.forward(x1, x2 )
+#         return outputs
+
+#     @staticmethod
+#     def backward(ctx, dy):
+#         dx1, dx2 = sub_cuda.backward(dy.to(torch.device('cuda:1')) )
+#         return dx1.to(torch.device('cuda:1')), dx2.to(torch.device('cuda:1')) 
 
 def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     """
@@ -18,7 +46,9 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     C = input_size_1[1]
     N1 = input_size_1[2]
     N2 = input_size_2[2]
-    if N1%4 ==0 and N2%2==0 : # N1%4 ==0 and N2%2==0 
+
+    print("kern_mat")
+    if False : # N1%4 ==0 and N2%2==0 
         N1_split = int(N1/4)
         N2_split = int(N2/2)
         pcl_2_expand_1 = pcl_2[:,:,0:N2_split].unsqueeze(-2).expand(B, C, N1_split, N2_split)
@@ -28,6 +58,8 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         pcl_1_expand_2 = pcl_1[:,:,N1_split:2*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
         pcl_1_expand_3 = pcl_1[:,:,2*N1_split:3*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
         pcl_1_expand_4 = pcl_1[:,:,3*N1_split:4*N1_split].unsqueeze(-1).expand(B, C, N1_split, N2_split)
+
+        pcl_diff_exp_11 = torch.exp(-torch.norm(pcl_1_expand_1 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
 
         pcl_diff_exp_11 = torch.exp(-torch.norm(pcl_1_expand_1 - pcl_2_expand_1, dim=1) * dist_coef  ) # B*N1*N2 
 
@@ -51,9 +83,21 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         pcl_diff_exp = torch.cat((pcl_diff_exp_1, pcl_diff_exp_2), dim=2)
 
     else:
-        pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
-        pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)
-        pcl_diff_exp = torch.exp(-torch.norm(pcl_1_expand - pcl_2_expand, dim=1) * dist_coef  ) # B*N1*N2 
+        # pcl_1_expand = pcl_1.unsqueeze(-1)
+        # print(pcl_1_expand.shape)
+        # pcl_2_expand = pcl_2.unsqueeze(-2)
+        # print(pcl_2_expand.shape)
+        # pcl_diff = pcl_1_expand - pcl_2_expand
+        
+        # pcl_diff = SubFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda:1'))
+        # pcl_diff_exp = torch.exp(-torch.norm(pcl_diff, dim=1) * dist_coef  )
+
+        pcl_diff = SubNormFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda:1'))
+        pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
+
+        # pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
+        # pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)
+        # pcl_diff_exp = torch.exp(-torch.norm(pcl_1_expand - pcl_2_expand, dim=1) * dist_coef  ) # B*N1*N2 
 
     return pcl_diff_exp
 
@@ -113,49 +157,6 @@ def gen_3D(yz1_grid, depth1, depth2):
 
     return xyz_1, xyz_2
 
-def draw3DPts(pcl_1, pcl_2=None, color_1=None, color_2=None):
-    """
-    pcl1 and pcl2 are B*3*N tensors, 3 for x, y, z (front, right, down)
-    """
-    input_size_1 = list(pcl_1.size() )
-    B = input_size_1[0]
-    C = input_size_1[1]
-    N1 = input_size_1[2]
-    if pcl_2 is not None:
-        input_size_2 = list(pcl_2.size() )
-        N2 = input_size_2[2]
-
-    pcl_1_cpu = pcl_1.cpu().numpy()
-    if pcl_2 is not None:
-        pcl_2_cpu = pcl_2.cpu().numpy()
-    if color_1 is not None:
-        color_1_cpu = color_1.cpu().numpy()
-    else:
-        color_1_cpu = None
-    if color_2 is not None:
-        color_2_cpu = color_2.cpu().numpy()
-    else:
-        color_2_cpu = None
-    
-    
-    for i in range(B):
-        # fig = plt.figure(i)
-        # ax = fig.gca(projection='3d')
-        # plt.cla()
-
-        pcd_o3d_1 = np_batch_to_o3d_pcd(i, pcl_1_cpu, color_1_cpu)
-
-        if pcl_2 is not None:
-            pcd_o3d_2 = np_batch_to_o3d_pcd(i, pcl_2_cpu, color_2_cpu)
-            draw_pcls(pcd_o3d_1, pcd_o3d_2, uniform_color=color_1 is None)
-        else:
-            draw_pcls(pcd_o3d_1, uniform_color=color_1 is None)
-
-        # plt.axis('equal')
-    # plt.show()
-    # plt.gca().set_aspect('equal')
-    # plt.gca().set_zlim(-10, 10)
-    # plt.gca().set_zlim(0, 3.5)
     
 class UNetInnerProd(nn.Module):
     def __init__(self,
@@ -189,7 +190,9 @@ class UNetInnerProd(nn.Module):
         dep2.requires_grad = False
         pose1_2.requires_grad = False
 
+        print("model_loss begin")
         loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
+        print("model_loss end")
 
         return feature1, feature2, loss, innerp_loss, feat_norm
 
@@ -243,8 +246,8 @@ class innerProdLoss(nn.Module):
         n_pts_1 = img1.shape[2]*img1.shape[3]
         n_pts_2 = img2.shape[2]*img2.shape[3]
 
-        img1_flat = img1.reshape(-1, 3, n_pts_1)
-        img2_flat = img2.reshape(-1, 3, n_pts_2)
+        # img1_flat = img1.reshape(-1, 3, n_pts_1)
+        # img2_flat = img2.reshape(-1, 3, n_pts_2)
         
         # draw3DPts(xyz1, xyz2_trans, img1_flat, img2_flat)
         # draw3DPts(xyz1, xyz2, img1_flat, img2_flat)

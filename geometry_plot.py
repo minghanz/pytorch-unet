@@ -56,3 +56,48 @@ def thresh_dist_np_batch(i, np_batch, dist_thresh, color_batch=None):
         return xyz1_, color_
     else:
         return xyz1_
+
+
+def draw3DPts(pcl_1, pcl_2=None, color_1=None, color_2=None):
+    """
+    pcl1 and pcl2 are B*3*N tensors, 3 for x, y, z (front, right, down)
+    """
+    input_size_1 = list(pcl_1.size() )
+    B = input_size_1[0]
+    C = input_size_1[1]
+    N1 = input_size_1[2]
+    if pcl_2 is not None:
+        input_size_2 = list(pcl_2.size() )
+        N2 = input_size_2[2]
+
+    pcl_1_cpu = pcl_1.cpu().numpy()
+    if pcl_2 is not None:
+        pcl_2_cpu = pcl_2.cpu().numpy()
+    if color_1 is not None:
+        color_1_cpu = color_1.cpu().numpy()
+    else:
+        color_1_cpu = None
+    if color_2 is not None:
+        color_2_cpu = color_2.cpu().numpy()
+    else:
+        color_2_cpu = None
+    
+    
+    for i in range(B):
+        # fig = plt.figure(i)
+        # ax = fig.gca(projection='3d')
+        # plt.cla()
+
+        pcd_o3d_1 = np_batch_to_o3d_pcd(i, pcl_1_cpu, color_1_cpu)
+
+        if pcl_2 is not None:
+            pcd_o3d_2 = np_batch_to_o3d_pcd(i, pcl_2_cpu, color_2_cpu)
+            draw_pcls(pcd_o3d_1, pcd_o3d_2, uniform_color=color_1 is None)
+        else:
+            draw_pcls(pcd_o3d_1, uniform_color=color_1 is None)
+
+        # plt.axis('equal')
+    # plt.show()
+    # plt.gca().set_aspect('equal')
+    # plt.gca().set_zlim(-10, 10)
+    # plt.gca().set_zlim(0, 3.5)

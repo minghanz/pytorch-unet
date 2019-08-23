@@ -85,6 +85,7 @@ class UNetRegressor(nn.Module):
         feature_map = self.down_path_feature_map[i+1](feature_map)
 
         prediction = self.regressor_block(feature_map)
+        prediction = torch.squeeze(prediction)
         return prediction
 
 class UNetConvBlock(nn.Module):

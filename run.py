@@ -72,6 +72,8 @@ def main():
             img2 = sample_batch['image 2']
             dep1 = sample_batch['depth 1']
             dep2 = sample_batch['depth 2']
+            idep1 = sample_batch['idepth 1']
+            idep2 = sample_batch['idepth 2']
             pose1_2 = sample_batch['rela_pose']
             
             # feature1 = model(img1)
@@ -83,7 +85,7 @@ def main():
             # loss = loss_model(feature1, feature2, dep1, dep2, pose1_2)
             if diff_mode:
                 model_overall.model_loss.gen_rand_pose()
-            feature1_full, feature2_full, loss, innerp_loss, feat_norm = model_overall(img1, img2, dep1, dep2, pose1_2)
+            feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred = model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
 
             feature1 = feature1_full[:,0:3,:,:]
             feature2 = feature2_full[:,0:3,:,:]
@@ -157,6 +159,7 @@ def main():
             writer.add_scalar('loss', loss, iter_overall)
             writer.add_scalar('innerp_loss', innerp_loss, iter_overall)
             writer.add_scalar('feat_norm', feat_norm, iter_overall)
+            writer.add_scalar('innerp_loss_pred', innerp_loss_pred, iter_overall)
 
             optim.zero_grad()
             loss.backward()

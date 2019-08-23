@@ -44,14 +44,60 @@ def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     pose_cur[2, 2] = (cp * cr)
     return pose_cur
 
-def process_dep_file(dep_file):
+
+def pose_from_euler_t_Tensor(euler_pose, transform=None):
+    """
+    This function generates 4*4 pose matrix in right-handed coordinate.
+    Source from CARLA follows a left-handed coordinate(front-right-up), but the definition of rotation is the same as in (front-right-down), 
+    which means that a rotation of the same value causes the object to rotate in the same way. It's just that the sign of coordinate
+    is defined different. 
+    """
+    x = euler_pose[:,0]
+    y = euler_pose[:,1]
+    z = euler_pose[:,2]
+    pitch_y = euler_pose[:,3]
+    roll_x = euler_pose[:,4]
+    yaw_z = euler_pose[:,5]
+    
+    if transform == 'Carla':
+        z = -z
+    batch_num = x.shape[0]
+    tensor_list = []
+    for i in range(batch_num):
+        cy = torch.cos(yaw_z[i] )
+        sy = torch.sin(yaw_z[i] )
+        cr = torch.cos(roll_x[i] )
+        sr = torch.sin(roll_x[i] )
+        cp = torch.cos(pitch_y[i] )
+        sp = torch.sin(pitch_y[i] )
+        # The 4*4 pose matrix is standard (following right-handed coordinate, and all angles are counter-clockwise when positive)
+        pose_cur = torch.Tensor(4,4)
+        pose_cur[0, 3] = x[i]
+        pose_cur[1, 3] = y[i]
+        pose_cur[2, 3] = z[i]
+        pose_cur[0, 0] = (cp * cy)
+        pose_cur[0, 1] =  (cy * sp * sr - sy * cr)
+        pose_cur[0, 2] = (cy * sp * cr + sy * sr)
+        pose_cur[1, 0] =  (sy * cp)
+        pose_cur[1, 1] = (sy * sp * sr + cy * cr)
+        pose_cur[1, 2] = (-cy * sr + sy * sp * cr)
+        pose_cur[2, 0] = (-sp)
+        pose_cur[2, 1] = (cp * sr)
+        pose_cur[2, 2] = (cp * cr)
+        tensor_list.append(pose_cur)
+    return torch.stack(tensor_list, dim=0)
+
+def process_dep_file(dep_file, with_inv=False):
     depth = skimage.io.imread(dep_file)
     depth = depth.astype(float) # this step is necessary
     dep_norm = (depth[...,0:1] + depth[...,1:2]*256 + depth[...,2:3]*256*256) /(256*256*256 - 1)
     dep_meter = dep_norm*1000
     dep_sudo_inv = 15/(dep_meter+15)
     # dep_sudo_inv_img = 255/np.amax(dep_sudo_inv) * dep_sudo_inv
-    return dep_meter
+    if with_inv:
+        return dep_meter, dep_sudo_inv
+    else:
+        return dep_meter
 
 def process_rgb_file(img_file):
     img = skimage.io.imread(img_file)
@@ -66,8 +112,8 @@ class ToTensor(object):
         self.device = device
 
     def __call__(self, sample):
-        image_1, image_2, depth_1, depth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2']
-
+        image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
+        
         # swap color axis because
         # numpy image: H x W x C
         # torch image: C X H X W
@@ -75,18 +121,24 @@ class ToTensor(object):
         image_2 = image_2.transpose((2, 0, 1))
         depth_1 = depth_1.transpose((2, 0, 1))
         depth_2 = depth_2.transpose((2, 0, 1))
+        idepth_1 = idepth_1.transpose((2, 0, 1))
+        idepth_2 = idepth_2.transpose((2, 0, 1))
         
         if self.device is None:
             return {'image 1': torch.from_numpy(image_1),
                     'image 2': torch.from_numpy(image_2),
                     'depth 1': torch.from_numpy(depth_1),
                     'depth 2': torch.from_numpy(depth_2),
+                    'idepth 1': torch.from_numpy(idepth_1),
+                    'idepth 2': torch.from_numpy(idepth_2),
                     'rela_pose': torch.from_numpy(sample['rela_pose'])}
         else:
             return {'image 1': torch.from_numpy(image_1).to(self.device, dtype=torch.float),
                     'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
                     'depth 1': torch.from_numpy(depth_1).to(self.device, dtype=torch.float),
                     'depth 2': torch.from_numpy(depth_2).to(self.device, dtype=torch.float),
+                    'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
+                    'idepth 2': torch.from_numpy(idepth_2).to(self.device, dtype=torch.float),
                     'rela_pose': torch.from_numpy(sample['rela_pose']).to(self.device, dtype=torch.float)}
 
 class Rescale(object):
@@ -103,7 +155,7 @@ class Rescale(object):
         self.output_size = output_size
 
     def __call__(self, sample):
-        image_1, image_2, depth_1, depth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2']
+        image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
         h, w = image_1.shape[:2]
 
         if isinstance(self.output_size, int):
@@ -120,11 +172,15 @@ class Rescale(object):
         image_2 = skimage.transform.resize(image_2, (new_h, new_w) )
         depth_1 = skimage.transform.resize(depth_1, (new_h, new_w) )
         depth_2 = skimage.transform.resize(depth_2, (new_h, new_w) )
+        idepth_1 = skimage.transform.resize(idepth_1, (new_h, new_w) )
+        idepth_2 = skimage.transform.resize(idepth_2, (new_h, new_w) )
 
         return {'image 1': image_1,
                 'image 2': image_2,
                 'depth 1': depth_1,
                 'depth 2': depth_2,
+                'idepth 1': idepth_1,
+                'idepth 2': idepth_2,
                 'rela_pose': sample['rela_pose']}
         
 
@@ -163,15 +219,35 @@ class ImgPoseDataset(Dataset):
                 pose_mat = pose_from_euler_t(x,y,z,pitch,roll,yaw, transform='Carla')
                 poses_list.append(pose_mat)
 
-            for i in range(len(paths_dep)): #range(2): #
+            # # constructing pairs from consequential images
+            # for i in range(len(paths_dep)): #range(2): #
+            #     frame_num = int( paths_dep[i].split('/')[-1].split('.')[0] )
+            #     frame_num_img = int( paths_img[i].split('/')[-1].split('.')[0] )
+            #     assert frame_num == frame_num_img, "the names of img and depth are not aligned!"
+            #     if i > 0:
+            #         pose_relative = np.linalg.inv( poses_list[frame_num_last] ).dot( poses_list[frame_num] )
+            #         pair_dict = {'image_path 1': paths_img[i-1], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i-1], 'depth_path 2': paths_dep[i], 'rela_pose': pose_relative}
+            #         self.pair_seq.append(pair_dict)
+            #     frame_num_last = frame_num
+
+            # constructing pairs from consequential 4 images
+            for i in range(len(paths_dep)-1):
                 frame_num = int( paths_dep[i].split('/')[-1].split('.')[0] )
                 frame_num_img = int( paths_img[i].split('/')[-1].split('.')[0] )
                 assert frame_num == frame_num_img, "the names of img and depth are not aligned!"
-                if i > 0:
-                    pose_relative = np.linalg.inv( poses_list[frame_num_last] ).dot( poses_list[frame_num] )
-                    pair_dict = {'image_path 1': paths_img[i-1], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i-1], 'depth_path 2': paths_dep[i], 'rela_pose': pose_relative}
+
+                for j in range(1, min(5, len(paths_dep)-i) ):
+                    frame_next = int( paths_dep[i+j].split('/')[-1].split('.')[0] )
+
+                    pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                    pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 'rela_pose': pose_relative}
                     self.pair_seq.append(pair_dict)
-                frame_num_last = frame_num
+
+                    pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                    pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 'rela_pose': pose_relative}
+                    self.pair_seq.append(pair_dict)
+
+                    
 
             print(folder, 'is loaded')
 
@@ -182,11 +258,14 @@ class ImgPoseDataset(Dataset):
     def __getitem__(self, idx):
         image_1 = process_rgb_file(self.pair_seq[idx]['image_path 1'])
         image_2 = process_rgb_file(self.pair_seq[idx]['image_path 2'])
-        depth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'])
-        depth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'])
+        # depth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'])
+        # depth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'])
+        depth_1, idepth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'], with_inv=True)
+        depth_2, idepth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'], with_inv=True)
         rela_pose = self.pair_seq[idx]['rela_pose']
 
-        sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
+        # sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
+        sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 'rela_pose': rela_pose}
     
         if self.transform:
             sample = self.transform(sample)

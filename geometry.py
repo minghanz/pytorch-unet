@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 from unet import UNet
+from unet_pose_regressor import UNetRegressor
 import numpy as np
-from dataloader import pose_from_euler_t
+from dataloader import pose_from_euler_t, pose_from_euler_t_Tensor
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from geometry_plot import draw3DPts
@@ -181,8 +182,9 @@ class UNetInnerProd(nn.Module):
         super(UNetInnerProd, self).__init__()
         self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
         self.model_loss = innerProdLoss(device, fx, fy, cx, cy, diff_mode, sparse_mode, kernalize, color_in_cost, L2_norm).to(device)
+        self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes)
 
-    def forward(self, img1, img2, dep1, dep2, pose1_2):
+    def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2):
         feature1 = self.model_UNet(img1)
         feature2 = self.model_UNet(img2)
 
@@ -190,11 +192,14 @@ class UNetInnerProd(nn.Module):
         dep2.requires_grad = False
         pose1_2.requires_grad = False
 
+        euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
+        pose1_2_pred = pose_from_euler_t_Tensor(euler_pred)
+
         print("model_loss begin")
-        loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
+        loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred)
         print("model_loss end")
 
-        return feature1, feature2, loss, innerp_loss, feat_norm
+        return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred
 
 
 class innerProdLoss(nn.Module):
@@ -228,7 +233,7 @@ class innerProdLoss(nn.Module):
         self.pose1_2_noise = torch.Tensor(self.pose1_2_noise).to(self.device)
         self.pose1_2_noise.requires_grad = False
 
-    def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2): # img1 and img2 only for visualization
+    def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2, pose1_2_pred=None): # img1 and img2 only for visualization
         xyz1, xyz2 = gen_3D(self.yz1_grid, depth1, depth2)
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans = torch.matmul(pose1_2, xyz2_homo)[:, 0:3, :] # B*3*N
@@ -243,8 +248,8 @@ class innerProdLoss(nn.Module):
         if self.color_in_cost:
             gramian_color, _ = gramian(img1, img2, norm_mode=0, kernalize=self.kernalize, L2_norm=False)
 
-        n_pts_1 = img1.shape[2]*img1.shape[3]
-        n_pts_2 = img2.shape[2]*img2.shape[3]
+        # n_pts_1 = img1.shape[2]*img1.shape[3]
+        # n_pts_2 = img2.shape[2]*img2.shape[3]
 
         # img1_flat = img1.reshape(-1, 3, n_pts_1)
         # img2_flat = img2.reshape(-1, 3, n_pts_2)
@@ -292,6 +297,18 @@ class innerProdLoss(nn.Module):
             final_loss = inner_neg
             if self.sparse_mode:
                 final_loss = inner_neg + fea_norm_sum
+        
+        if pose1_2_pred is not None:
+            xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
+            pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred)
+            if self.color_in_cost:
+                inner_neg_pred = - torch.sum(pcl_diff_exp_pred * gramian_feat * gramian_color )
+            else:
+                inner_neg_pred = - torch.sum(pcl_diff_exp_pred * gramian_feat ) 
+
+            final_loss = final_loss + inner_neg_pred
+
+            return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
 
         return final_loss, inner_neg, fea_norm_sum
 

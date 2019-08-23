@@ -48,7 +48,7 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     N1 = input_size_1[2]
     N2 = input_size_2[2]
 
-    print("kern_mat")
+    # print("kern_mat")
     if False : # N1%4 ==0 and N2%2==0 
         N1_split = int(N1/4)
         N2_split = int(N2/2)
@@ -180,9 +180,10 @@ class UNetInnerProd(nn.Module):
         L2_norm=True
     ):
         super(UNetInnerProd, self).__init__()
+        self.device = device
         self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
         self.model_loss = innerProdLoss(device, fx, fy, cx, cy, diff_mode, sparse_mode, kernalize, color_in_cost, L2_norm).to(device)
-        self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes)
+        self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
 
     def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2):
         feature1 = self.model_UNet(img1)
@@ -193,13 +194,14 @@ class UNetInnerProd(nn.Module):
         pose1_2.requires_grad = False
 
         euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
-        pose1_2_pred = pose_from_euler_t_Tensor(euler_pred)
+        pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
 
-        print("model_loss begin")
         loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred)
-        print("model_loss end")
-
         return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred
+
+        # loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
+        # return feature1, feature2, loss, innerp_loss, feat_norm
+
 
 
 class innerProdLoss(nn.Module):

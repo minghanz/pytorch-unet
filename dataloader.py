@@ -45,7 +45,7 @@ def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     return pose_cur
 
 
-def pose_from_euler_t_Tensor(euler_pose, transform=None):
+def pose_from_euler_t_Tensor(euler_pose, device, transform=None):
     """
     This function generates 4*4 pose matrix in right-handed coordinate.
     Source from CARLA follows a left-handed coordinate(front-right-up), but the definition of rotation is the same as in (front-right-down), 
@@ -71,7 +71,7 @@ def pose_from_euler_t_Tensor(euler_pose, transform=None):
         cp = torch.cos(pitch_y[i] )
         sp = torch.sin(pitch_y[i] )
         # The 4*4 pose matrix is standard (following right-handed coordinate, and all angles are counter-clockwise when positive)
-        pose_cur = torch.Tensor(4,4)
+        pose_cur = torch.Tensor(4,4).to(device)
         pose_cur[0, 3] = x[i]
         pose_cur[1, 3] = y[i]
         pose_cur[2, 3] = z[i]

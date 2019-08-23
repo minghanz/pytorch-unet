@@ -8,8 +8,8 @@ import torch.nn.functional as F
 class UNetRegressor(nn.Module):
     def __init__(
         self,
-        feature_channels=64,
-        wf=3,
+        feature_channels=128,
+        wf=4,
         padding=False,
         batch_norm=False,
     ):
@@ -42,10 +42,10 @@ class UNetRegressor(nn.Module):
         self.down_path_feature_map = nn.ModuleList()
         self.down_path_depth_map = nn.ModuleList()
 
-        prev_channels_feature = feature_channels # 64
-        next_channels_feature = prev_channels_feature / 2 # 32
-        prev_channels_depth = 1
-        next_channels_depth = 2 **wf # 8
+        prev_channels_feature = feature_channels # 64*2
+        next_channels_feature = int(prev_channels_feature / 2) # 32*2
+        prev_channels_depth = 2
+        next_channels_depth = 2 **wf # 8*2
         self.down_path_feature_map.append(
             UNetConvBlock(prev_channels_feature, next_channels_feature, padding, batch_norm)
         )
@@ -53,10 +53,10 @@ class UNetRegressor(nn.Module):
             UNetConvBlock(prev_channels_depth, next_channels_depth, padding, batch_norm)
         )
 
-        prev_channels_feature = next_channels_feature # 32
-        next_channels_feature = prev_channels_feature / 2 # 16
-        prev_channels_depth = next_channels_depth # 8
-        next_channels_depth = prev_channels_depth * 2 # 16
+        prev_channels_feature = next_channels_feature # 32*2
+        next_channels_feature = int(prev_channels_feature / 2) # 16*2
+        prev_channels_depth = next_channels_depth # 8*2
+        next_channels_depth = prev_channels_depth * 2 # 16*2
         self.down_path_feature_map.append(
             UNetConvBlock(prev_channels_feature + prev_channels_depth, next_channels_feature, padding, batch_norm)
         )
@@ -64,11 +64,17 @@ class UNetRegressor(nn.Module):
             UNetConvBlock(prev_channels_depth, next_channels_depth, padding, batch_norm)
         )
 
-        prev_channels_feature = next_channels_feature # 16
-        next_channels_feature = prev_channels_feature # 16
-        prev_channels_depth = next_channels_depth # 16
+        prev_channels_feature = next_channels_feature # 16*2
+        next_channels_feature = prev_channels_feature # 16*2
+        prev_channels_depth = next_channels_depth # 16*2
         self.down_path_feature_map.append(
             UNetConvBlock(prev_channels_feature + prev_channels_depth, next_channels_feature, padding, batch_norm)
+        )
+
+        prev_channels_feature = next_channels_feature # 16*2
+        next_channels_feature = int(prev_channels_feature / 2) # 8*2
+        self.down_path_feature_map.append(
+            UNetConvBlock(prev_channels_feature, next_channels_feature, padding, batch_norm)
         )
 
         self.regressor_block = RegressionBlock(prev_channels_feature, 6)

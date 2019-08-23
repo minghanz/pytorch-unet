@@ -91,7 +91,7 @@ def main():
             feature2 = feature2_full[:,0:3,:,:]
 
             if iter_overall == 0:
-                writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,pose1_2) )
+                writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )
             
             grid1 = torchvision.utils.make_grid(img1)
             grid2 = torchvision.utils.make_grid(img2)

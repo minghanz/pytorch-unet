@@ -45,6 +45,31 @@ def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     return pose_cur
 
 
+def euler_t_from_pose(pose_mat, transform=None):
+    """
+    This function generates 4*4 pose matrix in right-handed coordinate.
+    Source from CARLA follows a left-handed coordinate(front-right-up), but the definition of rotation is the same as in (front-right-down), 
+    which means that a rotation of the same value causes the object to rotate in the same way. It's just that the sign of coordinate
+    is defined different. 
+    """
+
+    x = pose_mat[0, 3]
+    y = pose_mat[1, 3]
+    z = pose_mat[2, 3]
+
+    pitch_y_1 = -math.asin(pose_mat[2, 0])
+    if pose_mat[2, 0] < 1-1e-5 and pose_mat[2, 0] > -1+1e-5:
+        roll_x_1 = math.atan2(pose_mat[2, 1]/math.cos(pitch_y_1), pose_mat[2, 2]/math.cos(pitch_y_1))
+        yaw_z_1 = math.atan2(pose_mat[1, 0]/math.cos(pitch_y_1), pose_mat[0, 0]/math.cos(pitch_y_1))
+    else:
+        yaw_z_1 = 0
+        if pose_mat[2, 0] < 0:
+            roll_x_1 = yaw_z_1 + math.atan2(pose_mat[0, 1], pose_mat[0, 2])
+        else:
+            roll_x_1 = -yaw_z_1 + math.atan2(-pose_mat[0, 1], -pose_mat[0, 2])
+    
+    return np.array([x,y,z,pitch_y_1, roll_x_1, yaw_z_1])
+
 def pose_from_euler_t_Tensor(euler_pose, device, transform=None):
     """
     This function generates 4*4 pose matrix in right-handed coordinate.
@@ -131,7 +156,8 @@ class ToTensor(object):
                     'depth 2': torch.from_numpy(depth_2),
                     'idepth 1': torch.from_numpy(idepth_1),
                     'idepth 2': torch.from_numpy(idepth_2),
-                    'rela_pose': torch.from_numpy(sample['rela_pose'])}
+                    'rela_pose': torch.from_numpy(sample['rela_pose']),
+                    'rela_euler': torch.from_numpy(sample['rela_euler'])}
         else:
             return {'image 1': torch.from_numpy(image_1).to(self.device, dtype=torch.float),
                     'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
@@ -139,7 +165,8 @@ class ToTensor(object):
                     'depth 2': torch.from_numpy(depth_2).to(self.device, dtype=torch.float),
                     'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
                     'idepth 2': torch.from_numpy(idepth_2).to(self.device, dtype=torch.float),
-                    'rela_pose': torch.from_numpy(sample['rela_pose']).to(self.device, dtype=torch.float)}
+                    'rela_pose': torch.from_numpy(sample['rela_pose']).to(self.device, dtype=torch.float),
+                    'rela_euler': torch.from_numpy(sample['rela_euler']).to(self.device, dtype=torch.float)}
 
 class Rescale(object):
     """Rescale the image in a sample to a given size.
@@ -181,7 +208,8 @@ class Rescale(object):
                 'depth 2': depth_2,
                 'idepth 1': idepth_1,
                 'idepth 2': idepth_2,
-                'rela_pose': sample['rela_pose']}
+                'rela_pose': sample['rela_pose'], 
+                'rela_euler': sample['rela_euler']}
         
 
 
@@ -212,12 +240,14 @@ class ImgPoseDataset(Dataset):
             assert (len(paths_img) == len(paths_dep) and len(paths_img) <= len(lines_pose) ), "the number of files aren't aligned!"
             
             poses_list = []
+            poses_euler_list = []
             for line in lines_pose:
                 strs = line.split()
                 strs = [float(str_) for str_ in strs]
                 x,y,z,pitch,roll,yaw = strs
                 pose_mat = pose_from_euler_t(x,y,z,pitch,roll,yaw, transform='Carla')
                 poses_list.append(pose_mat)
+                poses_euler_list.append( np.array([x,y,z,pitch,roll,yaw]) )
 
             # # constructing pairs from consequential images
             # for i in range(len(paths_dep)): #range(2): #
@@ -240,11 +270,15 @@ class ImgPoseDataset(Dataset):
                     frame_next = int( paths_dep[i+j].split('/')[-1].split('.')[0] )
 
                     pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-                    pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 'rela_pose': pose_relative}
+                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
+                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
                     self.pair_seq.append(pair_dict)
 
                     pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
-                    pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 'rela_pose': pose_relative}
+                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
+                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
                     self.pair_seq.append(pair_dict)
 
                     
@@ -263,9 +297,11 @@ class ImgPoseDataset(Dataset):
         depth_1, idepth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'], with_inv=True)
         depth_2, idepth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'], with_inv=True)
         rela_pose = self.pair_seq[idx]['rela_pose']
+        rela_euler = self.pair_seq[idx]['rela_euler']
 
         # sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
-        sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 'rela_pose': rela_pose}
+        sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 
+                    'rela_pose': rela_pose, 'rela_euler': rela_euler}
     
         if self.transform:
             sample = self.transform(sample)

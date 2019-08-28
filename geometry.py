@@ -197,7 +197,7 @@ class UNetInnerProd(nn.Module):
         pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
 
         loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred)
-        return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred
+        return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred
 
         # loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
         # return feature1, feature2, loss, innerp_loss, feat_norm

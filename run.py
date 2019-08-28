@@ -75,6 +75,7 @@ def main():
             idep1 = sample_batch['idepth 1']
             idep2 = sample_batch['idepth 2']
             pose1_2 = sample_batch['rela_pose']
+            euler1_2 = sample_batch['rela_euler']
             
             # feature1 = model(img1)
             # feature2 = model(img2)
@@ -85,7 +86,8 @@ def main():
             # loss = loss_model(feature1, feature2, dep1, dep2, pose1_2)
             if diff_mode:
                 model_overall.model_loss.gen_rand_pose()
-            feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred = model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
+            feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
+                model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
 
             feature1 = feature1_full[:,0:3,:,:]
             feature2 = feature2_full[:,0:3,:,:]
@@ -166,6 +168,10 @@ def main():
             optim.step()
             if i_batch %100 == 0:
                 print('batch', i_batch, 'finished')
+                print('euler:')
+                print(euler1_2)
+                print('pred_euler:')
+                print(euler_pred)
             if lr_change_time==0 and (i_batch ==2000 or loss < -1e7):
                 lr_change_time += 1
                 lr = lr * 0.1

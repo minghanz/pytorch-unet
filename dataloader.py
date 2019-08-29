@@ -96,19 +96,24 @@ def pose_from_euler_t_Tensor(euler_pose, device, transform=None):
         cp = torch.cos(pitch_y[i] )
         sp = torch.sin(pitch_y[i] )
         # The 4*4 pose matrix is standard (following right-handed coordinate, and all angles are counter-clockwise when positive)
-        pose_cur = torch.Tensor(4,4).to(device)
-        pose_cur[0, 3] = x[i]
-        pose_cur[1, 3] = y[i]
-        pose_cur[2, 3] = z[i]
-        pose_cur[0, 0] = (cp * cy)
-        pose_cur[0, 1] =  (cy * sp * sr - sy * cr)
-        pose_cur[0, 2] = (cy * sp * cr + sy * sr)
-        pose_cur[1, 0] =  (sy * cp)
-        pose_cur[1, 1] = (sy * sp * sr + cy * cr)
-        pose_cur[1, 2] = (-cy * sr + sy * sp * cr)
-        pose_cur[2, 0] = (-sp)
-        pose_cur[2, 1] = (cp * sr)
-        pose_cur[2, 2] = (cp * cr)
+        # pose_cur = torch.Tensor(4,4).to(device)
+        # pose_cur[0, 3] = x[i]
+        # pose_cur[1, 3] = y[i]
+        # pose_cur[2, 3] = z[i]
+        pose_cur = torch.stack([
+            torch.stack([(cp * cy), (cy * sp * sr - sy * cr), (cy * sp * cr + sy * sr), x[i]]),
+            torch.stack([(sy * cp), (sy * sp * sr + cy * cr), (-cy * sr + sy * sp * cr), y[i]]), 
+            torch.stack([(-sp), (cp * sr), (cp * cr), z[i]]), 
+        ]).to(device)
+        # pose_cur[0, 0] = (cp * cy)
+        # pose_cur[0, 1] =  (cy * sp * sr - sy * cr)
+        # pose_cur[0, 2] = (cy * sp * cr + sy * sr)
+        # pose_cur[1, 0] =  (sy * cp)
+        # pose_cur[1, 1] = (sy * sp * sr + cy * cr)
+        # pose_cur[1, 2] = (-cy * sr + sy * sp * cr)
+        # pose_cur[2, 0] = (-sp)
+        # pose_cur[2, 1] = (cp * sr)
+        # pose_cur[2, 2] = (cp * cr)
         tensor_list.append(pose_cur)
     return torch.stack(tensor_list, dim=0)
 

@@ -10,7 +10,7 @@ from torchvision import transforms, utils
 import torchvision
 from torch.utils.tensorboard import SummaryWriter
 import os
-from geometry import UNetInnerProd, innerProdLoss
+from network_modules import UNetInnerProd, innerProdLoss
 
 def vis_feat(feature, neg=False):
     # only keep the positive or negative part of the feature map, normalize the max to 1 
@@ -166,7 +166,7 @@ def main():
             optim.zero_grad()
             loss.backward()
             optim.step()
-            if i_batch %100 == 0:
+            if i_batch %10 == 0:
                 print('batch', i_batch, 'finished')
                 print('euler:')
                 print(euler1_2)

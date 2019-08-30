@@ -33,10 +33,29 @@ def vis_feat(feature, neg=False):
 
     return feat1_pos
 
+def feat_svd(feature):
+    # input feature is b*c*h*w, need to change to b*c*n
+    b = feature.shape[0]
+    c = feature.shape[1]
+    h = feature.shape[2]
+    w = feature.shape[3]
+    feat_flat = feature.reshape(b, c, h*w)
+    
+    # feat_mean = torch.mean(feature, dim=(2,3), keepdim=False)
+    # feat_flat = feat_flat - feat_mean.unsqueeze(2).expand_as(feat_flat)
+    # print(feat_flat.device)
+    # print(feat_flat.shape)
+    feat_mean = feat_flat.mean(dim=2, keepdim=True)
+    feat_flat = feat_flat - feat_mean.expand_as(feat_flat)
+    u, s, v = torch.svd(feat_flat)
+    feat_new = torch.bmm( u[:,:,0:3].transpose(1,2), feat_flat) # b*3*n
+    feat_img = feat_new.reshape(b,3,h,w)
+    return feat_img
+
 def main():
 
     print('Cuda available?', torch.cuda.is_available())
-    device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available()else 'cpu')
 
     # model = UNet(in_channels=3, n_classes=3, depth=3, wf=4, padding=True).to(device)
     # loss_model = innerProdLoss(device=device).to(device)
@@ -44,12 +63,12 @@ def main():
 
     diff_mode = True
     sparse_mode = True
-    kernalize = False
-    color_in_cost = False
+    kernalize = True
+    color_in_cost = True
     L2_norm = False
     width = 96 # (72*96)
     height = 72
-    model_overall = UNetInnerProd(in_channels=3, n_classes=64, depth=3, wf=4, padding=True, device=device, 
+    model_overall = UNetInnerProd(in_channels=3, n_classes=64, depth=3, wf=4, padding=True, up_mode='upsample', device=device, 
                                     diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm, 
                                     fx=int(width/2), fy=int(width/2), cx=int(width/2), cy=int(height/2) )
     lr = 1e-4
@@ -89,9 +108,6 @@ def main():
             feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
                 model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
 
-            feature1 = feature1_full[:,0:3,:,:]
-            feature2 = feature2_full[:,0:3,:,:]
-
             if iter_overall == 0:
                 writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )
             
@@ -100,6 +116,12 @@ def main():
 
             writer.add_image('img1',grid1, iter_overall)
             writer.add_image('img2',grid2, iter_overall)
+
+            # feature1 = feature1_full[:,0:3,:,:]
+            # feature2 = feature2_full[:,0:3,:,:]
+
+            feature1 = feat_svd(feature1_full)
+            feature2 = feat_svd(feature2_full)
 
             min_fea_1 = torch.min(feature1)
             min_fea_2 = torch.min(feature2)

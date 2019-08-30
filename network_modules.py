@@ -19,7 +19,7 @@ class UNetInnerProd(nn.Module):
         padding=False,
         batch_norm=False,
         up_mode='upconv',
-        device= torch.device('cuda:1'),
+        device= torch.device('cuda'),
         fx=48,
         fy=48,
         cx=48,
@@ -44,12 +44,14 @@ class UNetInnerProd(nn.Module):
         dep2.requires_grad = False
         pose1_2.requires_grad = False
 
+        # with pose predictor
         euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
         pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
 
         loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred)
         return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred
 
+        # # without pose predictor
         # loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
         # return feature1, feature2, loss, innerp_loss, feat_norm
 
@@ -116,9 +118,9 @@ class innerProdLoss(nn.Module):
                 fea_norm_sum = fea_norm_sum *1e3
         else:
             if self.diff_mode:
-                fea_norm_sum = fea_norm_sum *1e3
+                fea_norm_sum = fea_norm_sum *1e1
             else: 
-                fea_norm_sum = fea_norm_sum *1e4
+                fea_norm_sum = fea_norm_sum *1e2
 
         if self.diff_mode:
             pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)

@@ -1,6 +1,6 @@
 import torch
 
-import sub_cuda
+# import sub_cuda
 import sub_norm_cuda
 from torch.autograd import Function
 
@@ -26,8 +26,8 @@ class SubNormFunction(Function):
 
 #     @staticmethod
 #     def backward(ctx, dy):
-#         dx1, dx2 = sub_cuda.backward(dy.to(torch.device('cuda:1')) )
-#         return dx1.to(torch.device('cuda:1')), dx2.to(torch.device('cuda:1')) 
+#         dx1, dx2 = sub_cuda.backward(dy.to(torch.device('cuda')) )
+#         return dx1.to(torch.device('cuda')), dx2.to(torch.device('cuda')) 
 
 def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     """
@@ -83,11 +83,13 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         # print(pcl_2_expand.shape)
         # pcl_diff = pcl_1_expand - pcl_2_expand
         
-        # pcl_diff = SubFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda:1'))
+        # pcl_diff = SubFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda'))
         # pcl_diff_exp = torch.exp(-torch.norm(pcl_diff, dim=1) * dist_coef  )
 
-        pcl_diff = SubNormFunction.apply(pcl_1, pcl_2.contiguous())
-        # print(pcl_diff)
+        pcl_diff = SubNormFunction.apply(pcl_1.contiguous(), pcl_2.contiguous())
+        # print(pcl_diff.device)
+        assert not torch.isnan(pcl_diff).any()
+        assert not torch.isinf(pcl_diff).any()
         pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
 
         # pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
@@ -122,9 +124,6 @@ def gramian(feature1, feature2, norm_mode, kernalize, L2_norm):
     if norm_mode == 1:
         fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
         fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
-    elif norm_mode == 2:
-        fea_flat_1 = fea_flat_1 /100.0
-        fea_flat_2 = fea_flat_2 /100.0
     
     if not kernalize:
         gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 

@@ -111,24 +111,11 @@ def pose_from_euler_t_Tensor(euler_pose, device, transform=None):
         cp = torch.cos(pitch_y[i] )
         sp = torch.sin(pitch_y[i] )
         # The 4*4 pose matrix is standard (following right-handed coordinate, and all angles are counter-clockwise when positive)
-        # pose_cur = torch.Tensor(4,4).to(device)
-        # pose_cur[0, 3] = x[i]
-        # pose_cur[1, 3] = y[i]
-        # pose_cur[2, 3] = z[i]
         pose_cur = torch.stack([
             torch.stack([(cp * cy), (cy * sp * sr - sy * cr), (cy * sp * cr + sy * sr), x[i]]),
             torch.stack([(sy * cp), (sy * sp * sr + cy * cr), (-cy * sr + sy * sp * cr), y[i]]), 
             torch.stack([(-sp), (cp * sr), (cp * cr), z[i]]), 
         ]).to(device)
-        # pose_cur[0, 0] = (cp * cy)
-        # pose_cur[0, 1] =  (cy * sp * sr - sy * cr)
-        # pose_cur[0, 2] = (cy * sp * cr + sy * sr)
-        # pose_cur[1, 0] =  (sy * cp)
-        # pose_cur[1, 1] = (sy * sp * sr + cy * cr)
-        # pose_cur[1, 2] = (-cy * sr + sy * sp * cr)
-        # pose_cur[2, 0] = (-sp)
-        # pose_cur[2, 1] = (cp * sr)
-        # pose_cur[2, 2] = (cp * cr)
         tensor_list.append(pose_cur)
     return torch.stack(tensor_list, dim=0)
 
@@ -142,12 +129,12 @@ def process_dep_file(dep_file, with_inv=False, source='Carla'):
         dep_sudo_inv = 15/(dep_meter+15)
         # dep_sudo_inv_img = 255/np.amax(dep_sudo_inv) * dep_sudo_inv
     elif source == 'TUM':
-        print(depth.dtype, depth[0,0])
         depth = depth.astype(float) # this step is necessary
         depth = depth[..., np.newaxis]
         dep_meter = depth / 5000
-        dep_meter[dep_meter==0] = 0.001
-        dep_sudo_inv = 1/dep_meter
+        dep_meter_pos = depth / 5000 + 0.001
+        # dep_meter[dep_meter==0] = 0.001
+        dep_sudo_inv = 1/dep_meter_pos
 
     if with_inv:
         return dep_meter, dep_sudo_inv
@@ -223,7 +210,7 @@ def load_from_carla(folders):
                 pair_seq.append(pair_dict)
 
         print(folder, 'is loaded')
-        # break
+        break
     return pair_seq
 
 def load_from_TUM(folders):
@@ -231,23 +218,15 @@ def load_from_TUM(folders):
 
     pair_seq = []
     for folder in folders :
-        folder_img = os.path.join(folder, 'rgb')
-        files_img = sorted(os.listdir(folder_img) )
-        paths_img = [os.path.join(folder_img, f) for f in files_img]
-
-        folder_dep = os.path.join(folder, 'depth')
-        files_dep = sorted(os.listdir(folder_dep) )
-        paths_dep = [os.path.join(folder_dep, f) for f in files_dep]
+        print(folder)
 
         file_pose = open( os.path.join(folder, 'groundtruth.txt') )
         lines_pose = file_pose.readlines()
 
-        file_img_time = open( os.path.join(folder, 'rgb.txt') )
-        lines_rgb_time = file_img_time.readlines()
-        print(len(paths_img))
+        file_match = open(os.path.join(folder, 'match.txt'))
+        lines_match = file_match.readlines()
 
-        assert (len(paths_img) == len(paths_dep)), "the number of rgb and depth files aren't aligned!"
-        
+        # read poses
         poses_qt_list = []
         for i, line in enumerate(lines_pose):
             # first three lines are header
@@ -258,38 +237,114 @@ def load_from_TUM(folders):
             # t, x, y, z, qx, qy, qz, qw = strs
             poses_qt_list.append(strs)
 
+        print(len(poses_qt_list))
+
+        # read rgb, depth and align it with pose
+        paths_img = []
+        paths_dep = []
+        tstamps_img = []
         poses_list = []
         j_qt = 0
-        for i, line in enumerate(lines_rgb_time):
-            # first three lines are header
-            if i < 3:
-                continue
+        for line in lines_match:
             strs = line.split()
-            tstamp = float(strs[0])
+            tstamp = float(strs[2])
+            rgb_file_name = strs[1]
+            dep_file_name = strs[3]
+
+            out_of_bound = False
             while poses_qt_list[j_qt][0] < tstamp:
+                # print(poses_qt_list[j_qt][0])
                 j_qt += 1
+                if j_qt == len(poses_qt_list):
+                    out_of_bound = True
+                    break
+            if out_of_bound:
+                break
+
             assert (j_qt != 0), 'error: pose logger starts later than image'
-            assert (j_qt < len(poses_qt_list) ), 'error: pose logger ends earlier than image'
 
             if poses_qt_list[j_qt][0] == tstamp:
                 t, x, y, z, qx, qy, qz, qw = poses_qt_list[j_qt]
+            # elif poses_qt_list[j_qt][0] - tstamp > tstamp - poses_qt_list[j_qt-1][0]:
+            #     t, x, y, z, qx, qy, qz, qw = poses_qt_list[j_qt-1]
+            # elif poses_qt_list[j_qt][0] - tstamp <= tstamp - poses_qt_list[j_qt-1][0]:
+            #     t, x, y, z, qx, qy, qz, qw = poses_qt_list[j_qt]
             else:
                 # t1, x1, y1, z1, qx1, qy1, qz1, qw1 = poses_qt_list[j_qt]
                 # t0, x0, y0, z0, qx0, qy0, qz0, qw0 = poses_qt_list[j_qt-1]
+                t0 = poses_qt_list[j_qt-1][0]
+                t1 = poses_qt_list[j_qt][0]
+
+                if t1 - t0 > 0.1: 
+                    print('No pose near current time, skipped!')
+                    continue
+
+                w0 = (t1 - tstamp)/(t1 - t0)
+                w1 = (tstamp - t0)/(t1 - t0)
+                
+                pose7 = [None]*7
+                # ### linear average
+                # for j in range(7):
+                #     pose7[j] = w0*poses_qt_list[j_qt-1][j+1] + w1*poses_qt_list[j_qt][j+1] 
+
+                ## quaternion average
+                # x y z
+                for j in range(3):
+                    pose7[j] = w0*poses_qt_list[j_qt-1][j+1] + w1*poses_qt_list[j_qt][j+1] 
+                
+                #qx qy qz qw
+                qx0, qy0, qz0, qw0 = poses_qt_list[j_qt-1][4:8]
+                qx1, qy1, qz1, qw1 = poses_qt_list[j_qt][4:8]
+                wz = math.sqrt( (w0-w1)**2 + 4*w0*w1*(qx0*qx1+qy0*qy1+qz0*qz1+qw0*qw1)**2 )
+
+                p0 = math.sqrt( (w0*(w0-w1+wz))/(wz*(w0+w1+wz)) ) 
+                p1 = math.sqrt( (w1*(w1-w0+wz))/(wz*(w0+w1+wz)) )
+                if qx0*qx1+qy0*qy1+qz0*qz1+qw0*qw1 > 0:
+                    for j in range(3, 7):
+                        pose7[j] = p0*poses_qt_list[j_qt-1][j+1] + p1*poses_qt_list[j_qt][j+1]
+                else:
+                    for j in range(3, 7):
+                        pose7[j] = p0*poses_qt_list[j_qt-1][j+1] - p1*poses_qt_list[j_qt][j+1]
+
+                x, y, z, qx, qy, qz, qw = pose7
+
+            pose_mat = poseMatFromQuatAndT(qw, qx, qy, qz, x, y, z)
+
+            if np.linalg.det(pose_mat) > 1.01 or np.linalg.det(pose_mat) < 0.99:
+                print('weird!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+                print(qw, qx, qy, qz)
+                print(t1, poses_qt_list[j_qt][7], poses_qt_list[j_qt][4], poses_qt_list[j_qt][5], poses_qt_list[j_qt][6] )
+                print(t0, poses_qt_list[j_qt-1][7], poses_qt_list[j_qt-1][4], poses_qt_list[j_qt-1][5], poses_qt_list[j_qt-1][6] )
+                break
+                
                 t1 = poses_qt_list[j_qt][0]
                 t0 = poses_qt_list[j_qt-1][0]
                 pose7 = [None]*7
-                for j in range(7):
+                for j in range(3):
                     pose7[j] = ( (tstamp - t0)*poses_qt_list[j_qt][j+1] + (t1 - tstamp)*poses_qt_list[j_qt-1][j+1] ) / (t1 - t0)
+                for j in range(3, 7):
+                    pose7[j] = ( (tstamp - t0)*poses_qt_list[j_qt][j+1] - (t1 - tstamp)*poses_qt_list[j_qt-1][j+1] ) / (t1 - t0)
                 x, y, z, qx, qy, qz, qw = pose7
-            pose_mat = poseMatFromQuatAndT(qw, qx, qy, qz, x, y, z)
+                pose_mat = poseMatFromQuatAndT(qw, qx, qy, qz, x, y, z)
+
+                if np.linalg.det(pose_mat) > 1.01 or np.linalg.det(pose_mat) < 0.99:
+                    print('Bad pose skipped!')
+                    continue
+                
             poses_list.append(pose_mat)
+
+            paths_img.append(os.path.join(folder, rgb_file_name))
+            paths_dep.append(os.path.join(folder, dep_file_name))
+            tstamps_img.append(tstamp)
+
+
+        assert (len(paths_img) == len(paths_dep) and len(paths_img) == len(poses_list) ), "the number of rgb and depth files aren't aligned!"
 
         # constructing pairs from consequential 4 images
         for i in range(len(paths_dep)-1):
             frame_num = i
 
-            for j in range(1, min(5, len(paths_dep)-i) ):
+            for j in range(10, min(20, len(paths_dep)-i), 2 ):
                 frame_next = i+j
 
                 pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
@@ -304,9 +359,10 @@ def load_from_TUM(folders):
                             'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
                 pair_seq.append(pair_dict)
 
-        print(folder, 'is loaded')
+        print('loaded')
+        # break
 
-        return pair_seq
+    return pair_seq
 
 class ToTensor(object):
     """Convert ndarrays in sample to Tensors."""
@@ -364,19 +420,22 @@ class Rescale(object):
         h, w = image_1.shape[:2]
 
         if isinstance(self.output_size, int):
+            # scale the shorter side to output size
             if h > w:
                 new_h, new_w = self.output_size / w * h, self.output_size
             else: 
                 new_h, new_w = self.output_size, self.output_size / h * w
         else:
+            # scale two dimensions respectively
             new_h, new_w = self.output_size
 
         new_h, new_w = int(new_h), int(new_w)
 
         image_1 = skimage.transform.resize(image_1, (new_h, new_w) )
         image_2 = skimage.transform.resize(image_2, (new_h, new_w) )
-        depth_1 = skimage.transform.resize(depth_1, (new_h, new_w) )
-        depth_2 = skimage.transform.resize(depth_2, (new_h, new_w) )
+        ### different scaling strategy for depth to avoid averaging with zeros to create arrow-like scattered points
+        depth_1 = skimage.transform.resize(depth_1, (new_h, new_w), order=0,anti_aliasing=False ) 
+        depth_2 = skimage.transform.resize(depth_2, (new_h, new_w), order=0,anti_aliasing=False )
         idepth_1 = skimage.transform.resize(idepth_1, (new_h, new_w) )
         idepth_2 = skimage.transform.resize(idepth_2, (new_h, new_w) )
 
@@ -401,7 +460,7 @@ class ImgPoseDataset(Dataset):
             self.folders = glob.glob(root_dir+'/episode*')
             self.pair_seq = load_from_carla(folders=self.folders)
         elif 'TUM' in root_dir:
-            self.folders = glob.glob(root_dir+'/rgbd_dataset_freiburg1_xyz')
+            self.folders = glob.glob(root_dir+'/rgbd*')
             self.pair_seq = load_from_TUM(folders=self.folders)
 
         self.transform = transform

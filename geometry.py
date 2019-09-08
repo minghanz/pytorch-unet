@@ -98,18 +98,20 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
 
     return pcl_diff_exp
 
-def gramian(feature1, feature2, norm_mode, kernalize, L2_norm):
-    """inputs are B*C*H*W tensors, C corresponding to feature dimension (default 3)
+def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, L2_norm):
+    """
+    RBF inner product or normal inner product, for features.
+    inputs are B*C*H*W tensors, C corresponding to feature dimension (default 3)
     output is B*N1*N2
     """
 
-    batch_size = feature1.shape[0]
-    channels = feature1.shape[1]
-    n_pts_1 = feature1.shape[2]*feature1.shape[3]
-    n_pts_2 = feature2.shape[2]*feature2.shape[3]
+    # batch_size = feature1.shape[0]
+    # channels = feature1.shape[1]
+    # n_pts_1 = feature1.shape[2]*feature1.shape[3]
+    # n_pts_2 = feature2.shape[2]*feature2.shape[3]
 
-    fea_flat_1 = feature1.reshape(batch_size, channels, n_pts_1) # B*C*N1
-    fea_flat_2 = feature2.reshape(batch_size, channels, n_pts_2) # B*C*N2
+    # fea_flat_1 = feature1.reshape(batch_size, channels, n_pts_1) # B*C*N1
+    # fea_flat_2 = feature2.reshape(batch_size, channels, n_pts_2) # B*C*N2
 
     if L2_norm:
         fea_norm_1 = torch.norm(fea_flat_1, dim=1)
@@ -151,5 +153,21 @@ def gen_3D(yz1_grid, depth1, depth2):
 
     return xyz_1, xyz_2
 
+def gen_3D_flat(yz1_grid, depth1, depth2):
+    """
+    depth1/2 are B*1*N, yz1_grid is 3*N(N=H*W)
+    transform both to B*C(1 or 3)*N
+    both outputs are B*3*N
+    """
+    batch_size = depth1.shape[0]
+
+    depth1_flat = depth1.expand(-1, 3, -1) # B*3*N
+    depth2_flat = depth2.expand(-1, 3, -1)
+    yz1_grid_batch = yz1_grid.expand(batch_size, -1, -1) # B*3*N
     
+    xyz_1 = yz1_grid_batch * depth1_flat
+    xyz_2 = yz1_grid_batch * depth2_flat
+
+    return xyz_1, xyz_2
+
 

@@ -20,7 +20,6 @@ class UNetInnerProd(nn.Module):
         batch_norm=False,
         up_mode='upconv',
         device= torch.device('cuda'),
-        K=np.zeros((3,3)), 
         width=96, 
         height=72, 
         diff_mode=True,
@@ -29,12 +28,13 @@ class UNetInnerProd(nn.Module):
         color_in_cost=False, 
         L2_norm=True, 
         pose_predict_mode=False, 
-        dist_coef=1e-1
+        source='CARLA'
     ):
         super(UNetInnerProd, self).__init__()
         self.device = device
         self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
-        self.model_loss = innerProdLoss(device, K, width, height, diff_mode, sparse_mode, kernalize, color_in_cost, L2_norm, dist_coef).to(device)
+        self.model_loss = innerProdLoss(device, width, height, diff_mode, sparse_mode, kernalize, 
+            color_in_cost, L2_norm, source).to(device)
         self.pose_predict_mode = pose_predict_mode
         if self.pose_predict_mode:
             self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
@@ -59,19 +59,25 @@ class UNetInnerProd(nn.Module):
             loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
             return feature1, feature2, loss, innerp_loss, feat_norm
 
+    def set_norm_level(self, i_batch):
+        self.model_loss.set_norm_level(i_batch)
+        return
 
 
 class innerProdLoss(nn.Module):
-    def __init__(self, device, K=np.zeros((3,3)), width=96, height=72, diff_mode=True, sparse_mode=False, kernalize=False, color_in_cost=False, L2_norm=True, dist_coef=1e-1):
+    def __init__(self, device, width=96, height=72, diff_mode=True, sparse_mode=False, kernalize=False, 
+            color_in_cost=False, L2_norm=True, source='CARLA'):
         super(innerProdLoss, self).__init__()
         self.device = device
         # K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ])
         # K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
         # input: x front, y right (aligned with u direction), z down (aligned with v direction) [CARLA definition]
         # output: u, v, 1
-        
-        inv_K = torch.Tensor(np.linalg.inv(K)).to(self.device)
-        K = torch.Tensor(K).to(self.device)
+        self.source = source
+        self.options_from_source(width=width, height=height)
+
+        inv_K = torch.Tensor(np.linalg.inv(self.K)).to(self.device)
+        self.K = torch.Tensor(self.K).to(self.device)
 
         u_grid = torch.Tensor(np.arange(width) )
         v_grid = torch.Tensor(np.arange(height) )
@@ -84,21 +90,62 @@ class innerProdLoss(nn.Module):
         self.kernalize = kernalize
         self.color_in_cost = color_in_cost
         self.L2_norm = L2_norm
-        self.dist_coef = dist_coef
+
+    def options_from_source(self, width, height):
+        '''
+        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+        TUM xyz is right(u)-down(v)-front
+        dist_coef is scaling in the exponential in the RBF kernel, related to the movement and scenario scale in the data
+        '''
+        assert self.source == 'CARLA' or self.source == 'TUM', 'source unrecognized'
+        if self.source == 'CARLA':
+            fx=int(width/2)
+            fy=int(width/2)
+            cx=int(width/2)
+            cy=int(height/2)
+            self.K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+            self.dist_coef = 1e-1
+            self.noise_trans_scale = 1.0
+        elif self.source == 'TUM':
+            fx = width/640.0*525.0  # focal length x
+            fy = height/480.0*525.0  # focal length y
+            cx = width/640.0*319.5  # optical center x
+            cy = height/480.0*239.5  # optical center y
+            self.K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+            self.dist_coef = 1e0
+            self.noise_trans_scale = 0.1
 
     def gen_rand_pose(self):
-        trans_noise = np.random.normal(scale=1.0, size=(3,))
+        trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
         rot_noise = np.random.normal(scale=5.0, size=(3,))
-        self.pose1_2_noise = pose_from_euler_t(trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2])
+        if self.source=='CARLA':
+            self.pose1_2_noise = pose_from_euler_t(trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2]) # for carla
+        elif self.source=='TUM':
+            self.pose1_2_noise = pose_from_euler_t(trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]) # for TUM
+
         self.pose1_2_noise = torch.Tensor(self.pose1_2_noise).to(self.device)
         self.pose1_2_noise.requires_grad = False
+
+    def set_norm_level(self, i_batch):
+        if i_batch < 500:
+            self.norm_scale = 1
+        elif i_batch < 1000:
+            self.norm_scale = 1e-2
+        elif i_batch < 1500:
+            self.norm_scale = 1e-1
+        # elif i_batch < 2000:
+        #     self.norm_scale = 1
+        else:
+            self.norm_scale = 1
 
     def calc_loss(self, xyz1, xyz2, pose1_2, feature1, feature2, img1, img2, pose1_2_pred=None):
         '''
         Input points are flat
         '''
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
-        xyz2_trans = torch.matmul(pose1_2, xyz2_homo)[:, 0:3, :] # B*3*N
+        xyz2_trans_homo = torch.matmul(pose1_2, xyz2_homo) # B*4*N
+        xyz2_trans = xyz2_trans_homo[:, 0:3, :] # B*3*N
 
         if self.sparse_mode:
             normalization_mode = 0
@@ -109,58 +156,84 @@ class innerProdLoss(nn.Module):
 
         if self.color_in_cost:
             gramian_color, _ = gramian(img1, img2, norm_mode=0, kernalize=self.kernalize, L2_norm=False)
-
-        # n_pts_1 = img1.shape[2]*img1.shape[3]
-        # n_pts_2 = img2.shape[2]*img2.shape[3]
-
-        # img1_flat = img1.reshape(-1, 3, n_pts_1)
-        # img2_flat = img2.reshape(-1, 3, n_pts_2)
         
         # print('now original')
         # draw3DPts(xyz1, xyz2, img1, img2)
         # print('now matched')
         # draw3DPts(xyz1, xyz2_trans, img1, img2)
-        if self.L2_norm:
-            if self.diff_mode:
-                fea_norm_sum = fea_norm_sum *1e2
-            else: 
-                fea_norm_sum = fea_norm_sum *1e3
-        else:
-            if self.diff_mode:
-                fea_norm_sum = fea_norm_sum *1e1
-            else: 
-                fea_norm_sum = fea_norm_sum *1e2
+
+        fea_norm_sum = fea_norm_sum * self.norm_scale
+        # if self.L2_norm:
+        #     if self.diff_mode:
+        #         fea_norm_sum = fea_norm_sum *1e1
+        #     else: 
+        #         fea_norm_sum = fea_norm_sum *1e2
+        # else:
+        #     if self.diff_mode:
+        #         fea_norm_sum = fea_norm_sum *1e0
+        #     else: 
+        #         fea_norm_sum = fea_norm_sum *1e1
 
         if self.diff_mode:
-            # pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
-            # xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
-            # pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy, self.dist_coef)
+            if self.source=='TUM':
+                ### 1. perturb the scenario points by moving them to the center first
+                mean_trans_2 = xyz2_trans.mean(dim=(0,2))
+                trans_back = pose_from_euler_t(-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2], 0, 0, 0)
+                trans_back = torch.Tensor(trans_back).to(self.device)
+                trans_back.requires_grad = False
 
-            pcl_diff_exp_noisy = kern_mat(xyz1, xyz2, self.dist_coef)
+                trans_forth = pose_from_euler_t(mean_trans_2[0], mean_trans_2[1], mean_trans_2[2], 0, 0, 0)
+                trans_forth = torch.Tensor(trans_forth).to(self.device)
+                trans_forth.requires_grad = False
+
+                pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(self.pose1_2_noise, trans_back) )
+                xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_trans_homo)[:, 0:3, :] # B*3*N
+
+            elif self.source=='CARLA':
+                ## 2. directly perturb camera pose
+                pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
+                xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
+
+            pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy, self.dist_coef)
+
+            ### 3. treat original points (without matching) as perturbation
+            # pcl_diff_exp_noisy = kern_mat(xyz1, xyz2, self.dist_coef)
 
             pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
 
             if self.color_in_cost:
-                inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color )
+                # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color ) #  * gramian_feat
+                inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
+                inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * gramian_color )
+                inner_neg = inner_neg_noisy / inner_neg_match
             else:
-                inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat )
+                # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat ) #  * gramian_feat
+                inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat  )
+                inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat )
+                inner_neg = inner_neg_noisy / inner_neg_match
+
+                # print('inner_neg_match', inner_neg_match )
+                # print('inner_neg_noisy', inner_neg_noisy )
+                # print('match-noisy', inner_neg_match - inner_neg_noisy )
+                # print('noisy/match', inner_neg )
 
             final_loss = inner_neg
             if self.sparse_mode:
                 final_loss = inner_neg + fea_norm_sum
 
+            # print('inner_neg', inner_neg)
             # print('now noisy')
-            # # draw3DPts(xyz1, xyz2_trans_noisy, img1, img2)
-            # draw3DPts(xyz1, xyz2, img1, img2)
+            # draw3DPts(xyz1, xyz2_trans_noisy, img1, img2)
+
 
             # inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) #, dim=(1,2)
             # inner_neg_noisy = - torch.sum(pcl_diff_exp_noisy * gramian_feat ) #, dim=(1,2)
             # inner_neg = inner_neg - inner_neg_noisy
         else:
             if self.color_in_cost:
-                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
+                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color ) # * gramian_feat
             else:
-                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) 
+                inner_neg = - torch.sum(pcl_diff_exp * gramian_feat ) # * gramian_feat
 
             final_loss = inner_neg
             if self.sparse_mode:

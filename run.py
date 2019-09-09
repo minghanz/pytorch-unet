@@ -53,32 +53,7 @@ def feat_svd(feature):
     feat_img = feat_new.reshape(b,3,h,w)
     return feat_img
 
-def intrin_and_dir(width, height, source='CARLA'):
-    '''
-    CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
-    CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
-    TUM xyz is right(u)-down(v)-front
-    dist_coef is scaling in the exponential in the RBF kernel, related to the movement and scenario scale in the data
-    '''
-    assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
-    if source == 'CARLA':
-        fx=int(width/2)
-        fy=int(width/2)
-        cx=int(width/2)
-        cy=int(height/2)
-        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
-        root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
-        dist_coef = 1e-1
-    elif source == 'TUM':
-        fx = width/640.0*525.0  # focal length x
-        fy = height/480.0*525.0  # focal length y
-        cx = width/640.0*319.5  # optical center x
-        cy = height/480.0*239.5  # optical center y
-        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
-        root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
-        dist_coef = 1
 
-    return K, root_dir, dist_coef
 
 def main():
 
@@ -90,25 +65,29 @@ def main():
     # optim = torch.optim.Adam(model.parameters())
 
     diff_mode = True
-    sparse_mode = True
+    sparse_mode = False
     kernalize = True
-    color_in_cost = True
+    color_in_cost = False
     L2_norm = False
     pose_predict_mode = False
     width = 96 # (72*96)
     height = 72
-    K, root_dir, dist_coef = intrin_and_dir(width=width, height=height, source='TUM')
+    source='TUM'
+    if source=='CARLA':
+        root_dir = root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
+    elif source == 'TUM':
+        root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
 
     model_overall = UNetInnerProd(in_channels=3, n_classes=64, depth=3, wf=4, padding=True, up_mode='upsample', device=device, 
                                     diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm, 
-                                    K=K, width=width, height=height, pose_predict_mode=pose_predict_mode, dist_coef=dist_coef )
+                                    width=width, height=height, pose_predict_mode=pose_predict_mode, source=source )
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
     img_pose_dataset = ImgPoseDataset(
         root_dir = root_dir, 
         transform=transforms.Compose([Rescale(output_size=(height,width)), ToTensor(device=device) ]) )
-    data_to_load = DataLoader(img_pose_dataset, batch_size=2, shuffle=True)
+    data_to_load = DataLoader(img_pose_dataset, batch_size=3, shuffle=True)
 
     epochs = 10
 
@@ -139,12 +118,14 @@ def main():
             if diff_mode:
                 model_overall.model_loss.gen_rand_pose()
 
+            model_overall.set_norm_level(i_batch)
+
             if pose_predict_mode:
                 feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
-                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
+                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
             else:
                 feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
-                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2)
+                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
 
             if iter_overall == 0:
                 writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )

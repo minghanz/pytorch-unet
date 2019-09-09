@@ -117,15 +117,34 @@ def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, L2_norm):
         fea_norm_1 = torch.norm(fea_flat_1, dim=1)
         fea_norm_2 = torch.norm(fea_flat_2, dim=1)
 
-        fea_norm_sum_1 = torch.sum(fea_norm_1)
-        fea_norm_sum_2 = torch.sum(fea_norm_2)
+        # fea_norm_sum_1 = torch.sum(fea_norm_1)
+        # fea_norm_sum_2 = torch.sum(fea_norm_2)
+        fea_norm_sum_1 = torch.mean(fea_norm_1)
+        fea_norm_sum_2 = torch.mean(fea_norm_2)
     else:
-        fea_norm_sum_1 = torch.sum(torch.abs(fea_flat_1))
-        fea_norm_sum_2 = torch.sum(torch.abs(fea_flat_2))
+        # fea_norm_1 = torch.sum(torch.abs(fea_flat_1), dim=1)
+        # fea_norm_2 = torch.sum(torch.abs(fea_flat_2), dim=1)
+
+        # # fea_norm_sum_1 = torch.sum(fea_norm_1)
+        # # fea_norm_sum_2 = torch.sum(fea_norm_2)
+        # fea_norm_sum_1 = torch.mean(fea_norm_1)
+        # fea_norm_sum_2 = torch.mean(fea_norm_2)
+
+        ### preserve feature dimension
+        fea_norm_1 = torch.mean(torch.abs(fea_flat_1), dim=(0,2), keepdim=True)
+        fea_norm_2 = torch.mean(torch.abs(fea_flat_2), dim=(0,2), keepdim=True)
+        fea_norm_sum_1 = torch.mean(fea_norm_1)
+        fea_norm_sum_2 = torch.mean(fea_norm_2)
+
     
     if norm_mode == 1:
-        fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
-        fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
+        # fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
+        # fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
+
+        fea_flat_1 = torch.div(fea_flat_1, fea_norm_1 ) # +1e-6 applied if feature is non-positive
+        fea_flat_2 = torch.div(fea_flat_2, fea_norm_2 ) # +1e-6 applied if feature is non-positive
+
+    
     
     if not kernalize:
         gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 

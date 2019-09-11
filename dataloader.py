@@ -115,6 +115,7 @@ def pose_from_euler_t_Tensor(euler_pose, device, transform=None):
             torch.stack([(cp * cy), (cy * sp * sr - sy * cr), (cy * sp * cr + sy * sr), x[i]]),
             torch.stack([(sy * cp), (sy * sp * sr + cy * cr), (-cy * sr + sy * sp * cr), y[i]]), 
             torch.stack([(-sp), (cp * sr), (cp * cr), z[i]]), 
+            torch.tensor([0, 0, 0, 1], dtype=torch.float, device=device)
         ]).to(device)
         tensor_list.append(pose_cur)
     return torch.stack(tensor_list, dim=0)
@@ -210,7 +211,7 @@ def load_from_carla(folders):
                 pair_seq.append(pair_dict)
 
         print(folder, 'is loaded')
-        break
+        # break
     return pair_seq
 
 def load_from_TUM(folders):
@@ -344,7 +345,7 @@ def load_from_TUM(folders):
         for i in range(len(paths_dep)-1):
             frame_num = i
 
-            for j in range(10, min(20, len(paths_dep)-i), 2 ):
+            for j in range(5, min(15, len(paths_dep)-i), 2 ):
                 frame_next = i+j
 
                 pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )

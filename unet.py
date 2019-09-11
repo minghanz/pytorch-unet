@@ -98,6 +98,36 @@ class UNetConvBlock(nn.Module):
         out = self.block(x)
         return out
 
+class UNetConvSlimBlock(nn.Module):
+    def __init__(self, in_size, out_size, padding, batch_norm):
+        super(UNetConvSlimBlock, self).__init__()
+        block = []
+
+        block.append(nn.Conv2d(in_size, out_size, kernel_size=3, padding=int(padding)))
+        block.append(nn.ReLU())
+        if batch_norm:
+            block.append(nn.BatchNorm2d(out_size))
+
+        block.append(nn.Conv2d(out_size, int(out_size/2), kernel_size=1, padding=0 ))
+        block.append(nn.ReLU())
+        if batch_norm:
+            block.append(nn.BatchNorm2d(int(out_size/2)))
+
+        block.append(nn.Conv2d(int(out_size/2), int(out_size/2), kernel_size=3, padding=int(padding) ))
+        block.append(nn.ReLU())
+        if batch_norm:
+            block.append(nn.BatchNorm2d(int(out_size/2)))
+
+        block.append(nn.Conv2d(int(out_size/2), out_size, kernel_size=1, padding=0 ))
+        block.append(nn.ReLU())
+        if batch_norm:
+            block.append(nn.BatchNorm2d(out_size))
+
+        self.block = nn.Sequential(*block)
+
+    def forward(self, x):
+        out = self.block(x)
+        return out
 
 class UNetUpBlock(nn.Module):
     def __init__(self, in_size, out_size, up_mode, padding, batch_norm):
@@ -141,6 +171,8 @@ class UNetUpBlockDeep(nn.Module):
             )
 
         self.conv_block = UNetConvBlock(in_size + skip_in_size, out_size, padding, batch_norm)
+        # self.conv_block = UNetConvSlimBlock(in_size + skip_in_size, out_size, padding, batch_norm)
+        
 
     def center_crop(self, layer, target_size):
         _, _, layer_height, layer_width = layer.size()
@@ -153,6 +185,7 @@ class UNetUpBlockDeep(nn.Module):
     def forward(self, x, bridge):
         up = self.up(x)
         crop1 = self.center_crop(bridge, up.shape[2:])
+        
         out = torch.cat([up, crop1], 1)
         out = self.conv_block(out)
 

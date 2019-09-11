@@ -65,21 +65,21 @@ def main():
     # optim = torch.optim.Adam(model.parameters())
 
     diff_mode = True
-    sparse_mode = False
     kernalize = True
+    sparsify = False
     color_in_cost = False
     L2_norm = False
     pose_predict_mode = False
-    width = 96 # (72*96)
-    height = 72
+    width = 128 # (72*96)
+    height = 96
     source='TUM'
     if source=='CARLA':
         root_dir = root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
     elif source == 'TUM':
         root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
 
-    model_overall = UNetInnerProd(in_channels=3, n_classes=64, depth=3, wf=4, padding=True, up_mode='upsample', device=device, 
-                                    diff_mode=diff_mode, sparse_mode=sparse_mode, kernalize=kernalize, color_in_cost=color_in_cost, L2_norm=L2_norm, 
+    model_overall = UNetInnerProd(in_channels=3, n_classes=32, depth=4, wf=2, padding=True, up_mode='upsample', device=device, 
+                                    diff_mode=diff_mode, kernalize=kernalize, sparsify=sparsify, color_in_cost=color_in_cost, L2_norm=L2_norm, 
                                     width=width, height=height, pose_predict_mode=pose_predict_mode, source=source )
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
@@ -87,9 +87,9 @@ def main():
     img_pose_dataset = ImgPoseDataset(
         root_dir = root_dir, 
         transform=transforms.Compose([Rescale(output_size=(height,width)), ToTensor(device=device) ]) )
-    data_to_load = DataLoader(img_pose_dataset, batch_size=3, shuffle=True)
+    data_to_load = DataLoader(img_pose_dataset, batch_size=2, shuffle=True)
 
-    epochs = 10
+    epochs = 1
 
     writer = SummaryWriter()
 
@@ -130,26 +130,45 @@ def main():
             if iter_overall == 0:
                 writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )
             
-            grid1 = torchvision.utils.make_grid(img1)
-            grid2 = torchvision.utils.make_grid(img2)
-
-            writer.add_image('img1',grid1, iter_overall)
-            writer.add_image('img2',grid2, iter_overall)
 
             # feature1 = feature1_full[:,0:3,:,:]
             # feature2 = feature2_full[:,0:3,:,:]
 
-            feature1 = feat_svd(feature1_full)
-            feature2 = feat_svd(feature2_full)
+            visualize_mode = i_batch % 100 == 0
+            if visualize_mode:
+                grid1 = torchvision.utils.make_grid(img1)
+                grid2 = torchvision.utils.make_grid(img2)
 
-            min_fea_1 = torch.min(feature1)
-            min_fea_2 = torch.min(feature2)
-            max_fea_1 = torch.max(feature1)
-            max_fea_2 = torch.max(feature2)
-            writer.add_scalar('min_fea_1', min_fea_1, iter_overall)
-            writer.add_scalar('min_fea_2', min_fea_2, iter_overall)
-            writer.add_scalar('max_fea_1', max_fea_1, iter_overall)
-            writer.add_scalar('max_fea_2', max_fea_2, iter_overall)
+                writer.add_image('img1',grid1, iter_overall)
+                writer.add_image('img2',grid2, iter_overall)
+
+                feature1 = feat_svd(feature1_full)
+                feature2 = feat_svd(feature2_full)
+
+            # min_fea_1 = torch.min(feature1)
+            # min_fea_2 = torch.min(feature2)
+            # max_fea_1 = torch.max(feature1)
+            # max_fea_2 = torch.max(feature2)
+            # writer.add_scalar('min_fea_1', min_fea_1, iter_overall)
+            # writer.add_scalar('min_fea_2', min_fea_2, iter_overall)
+            # writer.add_scalar('max_fea_1', max_fea_1, iter_overall)
+            # writer.add_scalar('max_fea_2', max_fea_2, iter_overall)
+
+            # feat1_abs = torch.abs(feature1)
+            # feat2_abs = torch.abs(feature2)
+            feat1_abs = torch.abs(feature1_full)
+            feat2_abs = torch.abs(feature1_full)
+            min_fea_1_abs = torch.min(feat1_abs)
+            min_fea_2_abs = torch.min(feat2_abs)
+            max_fea_1_abs = torch.max(feat1_abs)
+            max_fea_2_abs = torch.max(feat2_abs)
+            max_fea_1 = max_fea_1_abs
+            max_fea_2 = max_fea_2_abs
+
+            writer.add_scalar('min_fea_1_abs', min_fea_1_abs, iter_overall)
+            writer.add_scalar('min_fea_2_abs', min_fea_2_abs, iter_overall)
+            writer.add_scalar('max_fea_1_abs', max_fea_1_abs, iter_overall)
+            writer.add_scalar('max_fea_2_abs', max_fea_2_abs, iter_overall)
 
             
             # to normalize feature map to max 1 for better visualization
@@ -164,30 +183,33 @@ def main():
             # feature1  = feature1 / max_abs_1
             # feature2  = feature2 / max_abs_2
 
-            # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
-            feat1_pos = vis_feat(feature1)
-            feat1_neg = vis_feat(feature1, neg=True)
-            feat2_pos = vis_feat(feature2)
-            feat2_neg = vis_feat(feature2, neg=True)
+            ### Visualization ##############################################
+            if visualize_mode:
+                # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
+                feat1_pos = vis_feat(feature1)
+                feat1_neg = vis_feat(feature1, neg=True)
+                feat2_pos = vis_feat(feature2)
+                feat2_neg = vis_feat(feature2, neg=True)
 
-            grid1pos = torchvision.utils.make_grid(feat1_pos)
-            grid1neg = torchvision.utils.make_grid(feat1_neg)
-            grid2pos = torchvision.utils.make_grid(feat2_pos)
-            grid2neg = torchvision.utils.make_grid(feat2_neg)
+                grid1pos = torchvision.utils.make_grid(feat1_pos)
+                grid1neg = torchvision.utils.make_grid(feat1_neg)
+                grid2pos = torchvision.utils.make_grid(feat2_pos)
+                grid2neg = torchvision.utils.make_grid(feat2_neg)
 
-            writer.add_image('feature1_pos',grid1pos, iter_overall)
-            writer.add_image('feature1_neg',grid1neg, iter_overall)
-            writer.add_image('feature2_pos',grid2pos, iter_overall)
-            writer.add_image('feature2_neg',grid2neg, iter_overall)
+                writer.add_image('feature1_pos',grid1pos, iter_overall)
+                writer.add_image('feature1_neg',grid1neg, iter_overall)
+                writer.add_image('feature2_pos',grid2pos, iter_overall)
+                writer.add_image('feature2_neg',grid2neg, iter_overall)
 
-            feature1  = feature1 / max_fea_1
-            feature2  = feature2 / max_fea_2
+                feature1  = feature1 / max_fea_1
+                feature2  = feature2 / max_fea_2
 
-            grid1fea = torchvision.utils.make_grid(feature1)
-            grid2fea = torchvision.utils.make_grid(feature2)
+                grid1fea = torchvision.utils.make_grid(feature1)
+                grid2fea = torchvision.utils.make_grid(feature2)
 
-            writer.add_image('feature1',grid1fea, iter_overall)
-            writer.add_image('feature2',grid2fea, iter_overall)
+                writer.add_image('feature1',grid1fea, iter_overall)
+                writer.add_image('feature2',grid2fea, iter_overall)
+            ###############################################################
 
             
             # feat_test=feature1.clone().detach()

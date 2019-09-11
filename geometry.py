@@ -105,14 +105,7 @@ def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, L2_norm):
     output is B*N1*N2
     """
 
-    # batch_size = feature1.shape[0]
-    # channels = feature1.shape[1]
-    # n_pts_1 = feature1.shape[2]*feature1.shape[3]
-    # n_pts_2 = feature2.shape[2]*feature2.shape[3]
-
-    # fea_flat_1 = feature1.reshape(batch_size, channels, n_pts_1) # B*C*N1
-    # fea_flat_2 = feature2.reshape(batch_size, channels, n_pts_2) # B*C*N2
-
+    ## L2 norm obselete
     if L2_norm:
         fea_norm_1 = torch.norm(fea_flat_1, dim=1)
         fea_norm_2 = torch.norm(fea_flat_2, dim=1)
@@ -122,34 +115,27 @@ def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, L2_norm):
         fea_norm_sum_1 = torch.mean(fea_norm_1)
         fea_norm_sum_2 = torch.mean(fea_norm_2)
     else:
-        # fea_norm_1 = torch.sum(torch.abs(fea_flat_1), dim=1)
-        # fea_norm_2 = torch.sum(torch.abs(fea_flat_2), dim=1)
-
-        # # fea_norm_sum_1 = torch.sum(fea_norm_1)
-        # # fea_norm_sum_2 = torch.sum(fea_norm_2)
-        # fea_norm_sum_1 = torch.mean(fea_norm_1)
-        # fea_norm_sum_2 = torch.mean(fea_norm_2)
-
         ### preserve feature dimension
-        fea_norm_1 = torch.mean(torch.abs(fea_flat_1), dim=(0,2), keepdim=True)
-        fea_norm_2 = torch.mean(torch.abs(fea_flat_2), dim=(0,2), keepdim=True)
-        fea_norm_sum_1 = torch.mean(fea_norm_1)
-        fea_norm_sum_2 = torch.mean(fea_norm_2)
+        fea_norm_1 = torch.mean(torch.abs(fea_flat_1), dim=2, keepdim=True) #average over all pixels
+        fea_norm_2 = torch.mean(torch.abs(fea_flat_2), dim=2, keepdim=True)
 
     
     if norm_mode == 1:
-        # fea_flat_1 = torch.div(fea_flat_1, fea_norm_1.expand_as(fea_flat_1) ) # +1e-6 applied if feature is non-positive
-        # fea_flat_2 = torch.div(fea_flat_2, fea_norm_2.expand_as(fea_flat_2) ) # +1e-6 applied if feature is non-positive
-
         fea_flat_1 = torch.div(fea_flat_1, fea_norm_1 ) # +1e-6 applied if feature is non-positive
         fea_flat_2 = torch.div(fea_flat_2, fea_norm_2 ) # +1e-6 applied if feature is non-positive
+        
+        fea_norm_sum_1 = torch.mean( torch.norm(fea_flat_1, dim=2) )
+        fea_norm_sum_2 = torch.mean( torch.norm(fea_flat_2, dim=2) )
+    else:
+        fea_norm_sum_1 = torch.mean(fea_norm_1)
+        fea_norm_sum_2 = torch.mean(fea_norm_2)
 
-    
+        
     
     if not kernalize:
         gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
     else:
-        gramian = kern_mat(fea_flat_1, fea_flat_2, dist_coef=1e1)
+        gramian = kern_mat(fea_flat_1, fea_flat_2, dist_coef=1e0) # , dist_coef=1e1
 
     return gramian, fea_norm_sum_1 + fea_norm_sum_2
 

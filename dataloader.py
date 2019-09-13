@@ -373,7 +373,7 @@ class ToTensor(object):
 
     def __call__(self, sample):
         image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
-        
+        image_1_raw, image_2_raw = sample['image 1 raw'], sample['image 2 raw']
         # swap color axis because
         # numpy image: H x W x C
         # torch image: C X H X W
@@ -383,10 +383,15 @@ class ToTensor(object):
         depth_2 = depth_2.transpose((2, 0, 1))
         idepth_1 = idepth_1.transpose((2, 0, 1))
         idepth_2 = idepth_2.transpose((2, 0, 1))
+
+        image_1_raw = image_1_raw.transpose((2, 0, 1))
+        image_2_raw = image_2_raw.transpose((2, 0, 1))
         
         if self.device is None:
             return {'image 1': torch.from_numpy(image_1),
                     'image 2': torch.from_numpy(image_2),
+                    'image 1 raw': torch.from_numpy(image_1_raw),
+                    'image 2 raw': torch.from_numpy(image_2_raw),
                     'depth 1': torch.from_numpy(depth_1),
                     'depth 2': torch.from_numpy(depth_2),
                     'idepth 1': torch.from_numpy(idepth_1),
@@ -396,6 +401,8 @@ class ToTensor(object):
         else:
             return {'image 1': torch.from_numpy(image_1).to(self.device, dtype=torch.float),
                     'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
+                    'image 1 raw': torch.from_numpy(image_1_raw).to(self.device, dtype=torch.float),
+                    'image 2 raw': torch.from_numpy(image_2_raw).to(self.device, dtype=torch.float),
                     'depth 1': torch.from_numpy(depth_1).to(self.device, dtype=torch.float),
                     'depth 2': torch.from_numpy(depth_2).to(self.device, dtype=torch.float),
                     'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
@@ -412,9 +419,10 @@ class Rescale(object):
             to output_size keeping aspect ratio the same.
     """
 
-    def __init__(self, output_size=(72, 96)): # 72, 96
+    def __init__(self, output_size=(72, 96), post_fn=None): # 72, 96
         assert isinstance(output_size, (int, tuple))
         self.output_size = output_size
+        self.post_fn = post_fn
 
     def __call__(self, sample):
         image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
@@ -440,14 +448,31 @@ class Rescale(object):
         idepth_1 = skimage.transform.resize(idepth_1, (new_h, new_w) )
         idepth_2 = skimage.transform.resize(idepth_2, (new_h, new_w) )
 
-        return {'image 1': image_1,
-                'image 2': image_2,
-                'depth 1': depth_1,
-                'depth 2': depth_2,
-                'idepth 1': idepth_1,
-                'idepth 2': idepth_2,
-                'rela_pose': sample['rela_pose'], 
-                'rela_euler': sample['rela_euler']}
+        if self.post_fn is not None:
+            image_1_processed = self.post_fn(image_1)
+            image_2_processed = self.post_fn(image_2)
+
+            return {'image 1': image_1_processed,
+                    'image 2': image_2_processed,
+                    'image 1 raw': image_1,
+                    'image 2 raw': image_2,
+                    'depth 1': depth_1,
+                    'depth 2': depth_2,
+                    'idepth 1': idepth_1,
+                    'idepth 2': idepth_2,
+                    'rela_pose': sample['rela_pose'], 
+                    'rela_euler': sample['rela_euler']}
+        else:
+            return {'image 1': image_1,
+                    'image 2': image_2,
+                    'image 1 raw': image_1,
+                    'image 2 raw': image_2,
+                    'depth 1': depth_1,
+                    'depth 2': depth_2,
+                    'idepth 1': idepth_1,
+                    'idepth 2': idepth_2,
+                    'rela_pose': sample['rela_pose'], 
+                    'rela_euler': sample['rela_euler']}
         
 
 

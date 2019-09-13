@@ -66,27 +66,31 @@ def main():
 
     diff_mode = True
     kernalize = True
-    sparsify = False
+    # sparsify = False
     color_in_cost = False
     L2_norm = False
     pose_predict_mode = False
-    width = 128 # (72*96)
+    width = 128 # (72*96) (96, 128) (240, 320)
     height = 96
     source='TUM'
     if source=='CARLA':
         root_dir = root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
     elif source == 'TUM':
         root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
+    sparsify_mode = 5 # 1 using a explicit weighting map, 2 max L2 fix L1 across pixels, 3 min L1, 4 min L2 across channels 
 
-    model_overall = UNetInnerProd(in_channels=3, n_classes=32, depth=4, wf=2, padding=True, up_mode='upsample', device=device, 
-                                    diff_mode=diff_mode, kernalize=kernalize, sparsify=sparsify, color_in_cost=color_in_cost, L2_norm=L2_norm, 
+    from segmentation_models_pytorch.encoders import get_preprocessing_fn
+    preprocess_input_fn = get_preprocessing_fn('resnet34', pretrained='imagenet')
+
+    model_overall = UNetInnerProd(in_channels=3, n_classes=16, depth=4, wf=2, padding=True, up_mode='upsample', device=device, 
+                                    diff_mode=diff_mode, kernalize=kernalize, sparsify_mode=sparsify_mode, color_in_cost=color_in_cost, L2_norm=L2_norm, 
                                     width=width, height=height, pose_predict_mode=pose_predict_mode, source=source )
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
     img_pose_dataset = ImgPoseDataset(
         root_dir = root_dir, 
-        transform=transforms.Compose([Rescale(output_size=(height,width)), ToTensor(device=device) ]) )
+        transform=transforms.Compose([Rescale(output_size=(height,width), post_fn=preprocess_input_fn), ToTensor(device=device) ]) )
     data_to_load = DataLoader(img_pose_dataset, batch_size=2, shuffle=True)
 
     epochs = 1
@@ -101,6 +105,9 @@ def main():
         for i_batch, sample_batch in enumerate(data_to_load):
             img1 = sample_batch['image 1']
             img2 = sample_batch['image 2']
+            img1_raw = sample_batch['image 1 raw']
+            img2_raw = sample_batch['image 2 raw']
+            
             dep1 = sample_batch['depth 1']
             dep2 = sample_batch['depth 2']
             idep1 = sample_batch['idepth 1']
@@ -124,8 +131,12 @@ def main():
                 feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
                     model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
             else:
-                feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
-                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+                if sparsify_mode == 1:
+                    feature1_full, feature2_full, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = \
+                        model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+                else:
+                    feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
+                        model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
 
             if iter_overall == 0:
                 writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )
@@ -134,13 +145,23 @@ def main():
             # feature1 = feature1_full[:,0:3,:,:]
             # feature2 = feature2_full[:,0:3,:,:]
 
-            visualize_mode = i_batch % 100 == 0
+            visualize_mode = i_batch % 500 == 0
             if visualize_mode:
-                grid1 = torchvision.utils.make_grid(img1)
-                grid2 = torchvision.utils.make_grid(img2)
+                grid1 = torchvision.utils.make_grid(img1_raw)
+                grid2 = torchvision.utils.make_grid(img2_raw)
 
                 writer.add_image('img1',grid1, iter_overall)
                 writer.add_image('img2',grid2, iter_overall)
+
+                if sparsify_mode == 1:
+                    feat_w_1 = feat_w_1 /  torch.max(feat_w_1)
+                    feat_w_2 = feat_w_2 /  torch.max(feat_w_2)
+                    grid3 = torchvision.utils.make_grid(feat_w_1)
+                    grid4 = torchvision.utils.make_grid(feat_w_2)
+                    # print(feat_w_1)
+                    # print(torch.sum(feat_w_1))
+                    writer.add_image('weight1',grid3, iter_overall)
+                    writer.add_image('weight2',grid4, iter_overall)
 
                 feature1 = feat_svd(feature1_full)
                 feature2 = feat_svd(feature2_full)

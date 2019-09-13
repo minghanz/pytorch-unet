@@ -10,6 +10,10 @@ from geometry_plot import draw3DPts
 
 from geometry import kern_mat, gramian, gen_3D, gen_3D_flat
 
+# from fastai.vision import *
+# from torchvision import models
+import segmentation_models_pytorch as smp
+
 class UNetInnerProd(nn.Module):
     def __init__(self,
         in_channels=1,
@@ -24,7 +28,7 @@ class UNetInnerProd(nn.Module):
         height=72, 
         diff_mode=True,
         kernalize=False,
-        sparsify=False,
+        sparsify_mode=1,
         color_in_cost=False, 
         L2_norm=True, 
         pose_predict_mode=False, 
@@ -32,16 +36,40 @@ class UNetInnerProd(nn.Module):
     ):
         super(UNetInnerProd, self).__init__()
         self.device = device
-        self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
-        self.model_loss = innerProdLoss(device, width, height, diff_mode, kernalize, sparsify, 
+
+        def final_act(x):
+            return x
+        def sigmoid_scaled(x):
+            sig = nn.Sigmoid()
+            x = 4 * sig(x) - 2
+            return x
+        assert sparsify_mode == 1 or sparsify_mode == 2 or sparsify_mode == 3 or sparsify_mode == 4 or sparsify_mode == 5, "unrecognized sparsity mode!"
+        self.sparsify_mode = sparsify_mode
+        if self.sparsify_mode == 1:
+            self.model_UNet = smp.UnetWithLastOut('resnet34', encoder_weights='imagenet', classes=n_classes, activation=sigmoid_scaled ).to(device)
+        else: # 2/3/4
+            self.model_UNet = smp.Unet('resnet34', encoder_weights='imagenet', classes=n_classes, activation=final_act ).to(device)
+        for param in self.model_UNet.encoder.parameters():
+            param.requires_grad = False
+        
+        # pretrained_model = models.resnet34(pretrained=True)
+        # self.model_Unet = models.unet.DynamicUnet(encoder=pretrained_model, n_classes=n_classes).to(device)
+
+        # self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
+
+        self.model_loss = innerProdLoss(device, width, height, diff_mode, kernalize, sparsify_mode, 
             color_in_cost, L2_norm, source).to(device)
         self.pose_predict_mode = pose_predict_mode
         if self.pose_predict_mode:
             self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
 
     def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2):
-        feature1 = self.model_UNet(img1)
-        feature2 = self.model_UNet(img2)
+        if self.sparsify_mode == 1:
+            feature1, feature1_w = self.model_UNet(img1)
+            feature2, feature2_w = self.model_UNet(img2)
+        else: # 2/3/4
+            feature1 = self.model_UNet(img1)
+            feature2 = self.model_UNet(img2)
 
         dep1.requires_grad = False
         dep2.requires_grad = False
@@ -52,12 +80,21 @@ class UNetInnerProd(nn.Module):
             euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
             pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
 
-            loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred)
+            loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred=pose1_2_pred)
             return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred
         else:
             # without pose predictor
-            loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2)
-            return feature1, feature2, loss, innerp_loss, feat_norm
+            if self.sparsify_mode == 1:
+                loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = self.model_loss(feature1, feature2, 
+                    dep1, dep2, pose1_2, img1, img2, feature1_w=feature1_w, feature2_w=feature2_w)
+                return feature1, feature2, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 
+            else:
+                loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, 
+                    dep1, dep2, pose1_2, img1, img2)
+                return feature1, feature2, loss, innerp_loss, feat_norm
+            # loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, feature1_w=feature1_w, feature2_w=feature2_w)
+            # return feature1, feature2, loss, innerp_loss, feat_norm
+            return feature1, feature2, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 
 
     def set_norm_level(self, i_batch):
         self.model_loss.set_norm_level(i_batch)
@@ -65,7 +102,7 @@ class UNetInnerProd(nn.Module):
 
 
 class innerProdLoss(nn.Module):
-    def __init__(self, device, width=96, height=72, diff_mode=True, kernalize=False, sparsify=False,
+    def __init__(self, device, width=96, height=72, diff_mode=True, kernalize=False, sparsify_mode=False,
             color_in_cost=False, L2_norm=True, source='CARLA'):
         super(innerProdLoss, self).__init__()
         self.device = device
@@ -89,7 +126,9 @@ class innerProdLoss(nn.Module):
         self.kernalize = kernalize
         self.color_in_cost = color_in_cost
         self.L2_norm = L2_norm
-        self.sparsify = sparsify
+        self.sparsify_mode = sparsify_mode
+
+        self.w_normalize = nn.Softmax(dim=2)
 
     def options_from_source(self, width, height):
         '''
@@ -120,7 +159,8 @@ class innerProdLoss(nn.Module):
         # trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
         # rot_noise = np.random.normal(scale=3.0, size=(3,))
         trans_noise = torch.randn((3), dtype=torch.float, device=self.device) * self.noise_trans_scale
-        rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
+        # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
+        rot_noise = torch.zeros(3, dtype=torch.float, device=self.device)
         
         if self.source=='CARLA':
             # self.pose1_2_noise = pose_from_euler_t(trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2]) # for carla
@@ -150,7 +190,7 @@ class innerProdLoss(nn.Module):
         # if self.sparsify:
         #     self.norm_scale *= 1e-2
 
-    def calc_loss(self, xyz1, xyz2, pose1_2, feature1, feature2, img1, img2, pose1_2_pred=None):
+    def calc_loss(self, xyz1, xyz2, pose1_2, feature1, feature2, img1, img2, feature1_w=None, feature2_w=None, pose1_2_pred=None):
         '''
         Input points are flat
         '''
@@ -158,23 +198,38 @@ class innerProdLoss(nn.Module):
         xyz2_trans_homo = torch.matmul(pose1_2, xyz2_homo) # B*4*N
         xyz2_trans = xyz2_trans_homo[:, 0:3, :] # B*3*N
 
-        if self.sparsify:
-            norm_mode = 0
-        else:
-            norm_mode = 1
-        gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.kernalize, L2_norm=self.L2_norm) # could be kernelized or not
+        # if self.sparsify:
+        #     norm_mode = 0
+        # else:
+        if self.sparsify_mode == 1:
+            norm_mode = True
+            norm_dim = 1
+        elif self.sparsify_mode == 2 or self.sparsify_mode == 5:
+            norm_mode = True
+            norm_dim = 2
+        elif self.sparsify_mode == 3:
+            norm_mode = False
+            norm_dim = 2
+        elif self.sparsify_mode == 4:
+            norm_mode = False
+            norm_dim = 1
+        # gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.kernalize, L2_norm=self.L2_norm) # could be kernelized or not
+        gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim) # could be kernelized or not
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans, self.dist_coef)
 
         if self.color_in_cost:
-            gramian_color, _ = gramian(img1, img2, norm_mode=0, kernalize=self.kernalize, L2_norm=False)
+            # gramian_color, _ = gramian(img1, img2, norm_mode=0, kernalize=self.kernalize, L2_norm=False)
+            gramian_color, _ = gramian(img1, img2, norm_mode=False, kernalize=self.kernalize, norm_dim=0 )
         
         # print('now original')
         # draw3DPts(xyz1, xyz2, img1, img2)
         # print('now matched')
         # draw3DPts(xyz1, xyz2_trans, img1, img2)
 
-        if self.sparsify:
-            fea_norm_sum = fea_norm_sum * self.norm_scale
+        if self.sparsify_mode == 5:
+            fea_norm_sum_to_loss = fea_norm_sum * 0
+        else:
+            fea_norm_sum_to_loss = fea_norm_sum * self.norm_scale
 
         if self.diff_mode:
             if self.source=='TUM':
@@ -216,19 +271,28 @@ class innerProdLoss(nn.Module):
 
             # pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
             if self.color_in_cost:
-                # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color ) #  * gramian_feat
-                inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
-                inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat * gramian_color )
+                if self.sparsify_mode != 1:
+                    # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color ) #  * gramian_feat
+                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
+                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat * gramian_color )
+                else:
+                    inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
+                    inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
                 inner_neg = inner_neg_noisy / inner_neg_match
             else:
-                # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat ) #  * gramian_feat
-                inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat  )
-                inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat )
+                if self.sparsify_mode != 1:
+                    # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat ) #  * gramian_feat
+                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat  )
+                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat )
+                else:
+                    inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
+                    inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
                 inner_neg = inner_neg_noisy / inner_neg_match
+                # print(inner_neg_match)
 
             final_loss = inner_neg
-            if self.sparsify:
-                final_loss = final_loss + fea_norm_sum
+            if self.sparsify_mode != 1:
+                final_loss = final_loss + fea_norm_sum_to_loss
 
             # print('inner_neg', inner_neg)
             # print('now noisy')
@@ -236,13 +300,19 @@ class innerProdLoss(nn.Module):
 
         else:
             if self.color_in_cost:
-                inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color ) # * gramian_feat
+                if self.sparsify_mode != 1:
+                    inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color ) # * gramian_feat
+                else:
+                    inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) # * gramian_feat
             else:
-                inner_neg = - torch.mean(pcl_diff_exp * gramian_feat ) # * gramian_feat
+                if self.sparsify_mode != 1:
+                    inner_neg = - torch.mean(pcl_diff_exp * gramian_feat ) # * gramian_feat
+                else:
+                    inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w ) # * gramian_feat
 
             final_loss = inner_neg
-            if self.sparsify:
-                final_loss = final_loss + fea_norm_sum
+            if self.sparsify_mode != 1:
+                final_loss = final_loss + fea_norm_sum_to_loss
         
         if pose1_2_pred is not None:
             xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
@@ -256,11 +326,13 @@ class innerProdLoss(nn.Module):
 
             
             return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
+            # return final_loss, inner_neg, inner_neg_pred
 
         return final_loss, inner_neg, fea_norm_sum
+        # return final_loss, inner_neg
 
 
-    def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2, pose1_2_pred=None): # img1 and img2 only for visualization
+    def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2, feature1_w=None, feature2_w=None, pose1_2_pred=None): # img1 and img2 only for visualization
         
         ### flatten depth and feature maps ahead of other operations to make pixel selection easier
         ### add a pixel selection module for the cases where not all pixels are included in the CVO loss
@@ -279,6 +351,12 @@ class innerProdLoss(nn.Module):
         img_flat_1 = img1.reshape(batch_size, 3, n_pts_1) # B*C*N1
         img_flat_2 = img2.reshape(batch_size, 3, n_pts_2) # B*C*N2
 
+        if self.sparsify_mode == 1:
+            fea_w_flat_1 = self.w_normalize( feature1_w.reshape(batch_size, 1, n_pts_1) ) # B*C*N1
+            fea_w_flat_2 = self.w_normalize( feature2_w.reshape(batch_size, 1, n_pts_2) ) # B*C*N2
+            fea_w_1 = fea_w_flat_1.reshape(batch_size, 1, feature1_w.shape[2], feature1_w.shape[3] )
+            fea_w_2 = fea_w_flat_2.reshape(batch_size, 1, feature2_w.shape[2], feature2_w.shape[3] )
+
         #################################################
         final_loss = torch.tensor(0., device=self.device)
         inner_neg = torch.tensor(0., device=self.device)
@@ -286,15 +364,26 @@ class innerProdLoss(nn.Module):
         inner_neg_pred = torch.tensor(0., device=self.device)
 
         for i in range(batch_size):
-            xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel = selected(depth1_flat[i], fea_flat_1[i], img_flat_1[i], self.yz1_grid) #3*N
-            xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel = selected(depth2_flat[i], fea_flat_2[i], img_flat_2[i], self.yz1_grid) #3*N            
+            if self.sparsify_mode == 1:
+                xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel, fea_w_flat_1_sel = selected(depth1_flat[i], 
+                                                                    fea_flat_1[i], img_flat_1[i], self.yz1_grid, fea_w_flat_1[i]) #3*N
+                xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel, fea_w_flat_2_sel = selected(depth2_flat[i], 
+                                                                    fea_flat_2[i], img_flat_2[i], self.yz1_grid, fea_w_flat_2[i]) #3*N   
+            else:
+                xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel = selected(depth1_flat[i], fea_flat_1[i], img_flat_1[i], self.yz1_grid) #3*N
+                xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel = selected(depth2_flat[i], fea_flat_2[i], img_flat_2[i], self.yz1_grid) #3*N 
+                fea_w_flat_1_sel = None
+                fea_w_flat_2_sel = None
 
             if pose1_2_pred is None:
                 final_loss_single, inner_neg_single, fea_norm_sum_single = \
-                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel)
+                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel,
+                        feature1_w=fea_w_flat_1_sel, feature2_w=fea_w_flat_2_sel)
             else:
                 final_loss_single, inner_neg_single, fea_norm_sum_single, inner_neg_pred_single = \
-                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel, pose1_2_pred[i])
+                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel, 
+                        feature1_w=fea_w_flat_1_sel, feature2_w=fea_w_flat_2_sel, pose1_2_pred=pose1_2_pred[i])
+
                 inner_neg_pred = inner_neg_pred + inner_neg_pred_single
 
             final_loss = final_loss + final_loss_single
@@ -302,9 +391,16 @@ class innerProdLoss(nn.Module):
             fea_norm_sum = fea_norm_sum + fea_norm_sum_single
         
         if pose1_2_pred is None:
-            return final_loss, inner_neg, fea_norm_sum
+            if self.sparsify_mode == 1:
+                return final_loss, inner_neg, fea_norm_sum, fea_w_1, fea_w_2
+                # return final_loss, inner_neg, fea_w_1, fea_w_2
+            else:
+                return final_loss, inner_neg, fea_norm_sum
+                # return final_loss, inner_neg
+                
         else:
             return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
+            # return final_loss, inner_neg, inner_neg_pred
 
             
         #############################################
@@ -313,7 +409,7 @@ class innerProdLoss(nn.Module):
         # return self.calc_loss(xyz1, xyz2, pose1_2, fea_flat_1, fea_flat_2, img_flat_1, img_flat_2, pose1_2_pred)
 
 
-def selected(depth_flat_sample, fea_flat_sample, img_flat_sample, yz1_grid):
+def selected(depth_flat_sample, fea_flat_sample, img_flat_sample, yz1_grid, fea_w_flat_sample=None):
     '''
     Input is 1*N or 3*N
     Output 1*C*N (keep the batch dimension)
@@ -323,8 +419,15 @@ def selected(depth_flat_sample, fea_flat_sample, img_flat_sample, yz1_grid):
     depth_flat_sample_selected = depth_flat_sample[:,mask]
     fea_flat_sample_selected = fea_flat_sample[:,mask]
     img_flat_sample_selected = img_flat_sample[:,mask]
+    if fea_w_flat_sample is not None:
+        fea_w_flat_sample_selected = fea_w_flat_sample[:,mask]
 
     yz1_grid_selected = yz1_grid[:,mask]
     xyz_selected = yz1_grid_selected * depth_flat_sample_selected
 
-    return xyz_selected.unsqueeze(0), depth_flat_sample_selected.unsqueeze(0), fea_flat_sample_selected.unsqueeze(0), img_flat_sample_selected.unsqueeze(0)
+    if fea_w_flat_sample is not None:
+        return xyz_selected.unsqueeze(0), depth_flat_sample_selected.unsqueeze(0), \
+            fea_flat_sample_selected.unsqueeze(0), img_flat_sample_selected.unsqueeze(0), fea_w_flat_sample_selected.unsqueeze(0)
+    else:
+        return xyz_selected.unsqueeze(0), depth_flat_sample_selected.unsqueeze(0), \
+            fea_flat_sample_selected.unsqueeze(0), img_flat_sample_selected.unsqueeze(0)

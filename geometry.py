@@ -98,37 +98,42 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
 
     return pcl_diff_exp
 
-def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, L2_norm):
+def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, norm_dim):
     """
     RBF inner product or normal inner product, for features.
-    inputs are B*C*H*W tensors, C corresponding to feature dimension (default 3)
+    inputs are B*C*N tensors, C corresponding to feature dimension (default 3)
     output is B*N1*N2
+    norm_dim: 0 (do not calculate norm), 1 or 2
+    norm_mode: whether to normalize the feature map
     """
 
-    ## L2 norm obselete
-    if L2_norm:
-        fea_norm_1 = torch.norm(fea_flat_1, dim=1)
-        fea_norm_2 = torch.norm(fea_flat_2, dim=1)
+    fea_norm_sum_1 = torch.tensor(0., dtype=fea_flat_1.dtype, device=fea_flat_1.get_device())
+    fea_norm_sum_2 = torch.tensor(0., dtype=fea_flat_2.dtype, device=fea_flat_2.get_device())
 
-        # fea_norm_sum_1 = torch.sum(fea_norm_1)
-        # fea_norm_sum_2 = torch.sum(fea_norm_2)
-        fea_norm_sum_1 = torch.mean(fea_norm_1)
-        fea_norm_sum_2 = torch.mean(fea_norm_2)
-    else:
-        ### preserve feature dimension
-        fea_norm_1 = torch.mean(torch.abs(fea_flat_1), dim=2, keepdim=True) #average over all pixels
+    if norm_dim == 1:
+        ### preserve pixel dimension
+        fea_norm_1 = torch.norm(fea_flat_1, dim=1, keepdim=True) #L2 norm across channels
+        fea_norm_2 = torch.norm(fea_flat_2, dim=1, keepdim=True)
+    elif norm_dim == 2:
+        ### preserve channel dimension
+        fea_norm_1 = torch.mean(torch.abs(fea_flat_1), dim=2, keepdim=True) # L1 norm across pixels
         fea_norm_2 = torch.mean(torch.abs(fea_flat_2), dim=2, keepdim=True)
-
     
-    if norm_mode == 1:
+    if norm_mode == True:
+        # normalize the feature map using the above norm
         fea_flat_1 = torch.div(fea_flat_1, fea_norm_1 ) # +1e-6 applied if feature is non-positive
         fea_flat_2 = torch.div(fea_flat_2, fea_norm_2 ) # +1e-6 applied if feature is non-positive
-        
-        fea_norm_sum_1 = torch.mean( torch.norm(fea_flat_1, dim=2) )
-        fea_norm_sum_2 = torch.mean( torch.norm(fea_flat_2, dim=2) )
+
+        ### normally speaking, no need to calculate norm_sum again since the feature map is already normalized
+        ### but we calculate L2 norm across pixels here to measure the sparsity
+        if norm_dim == 2:
+            ## L2 norm across pixels, indicate the sparsity across pixels
+            fea_norm_sum_1 = - torch.mean( torch.norm(fea_flat_1, dim=2) )
+            fea_norm_sum_2 = - torch.mean( torch.norm(fea_flat_2, dim=2) )
     else:
-        fea_norm_sum_1 = torch.mean(fea_norm_1)
-        fea_norm_sum_2 = torch.mean(fea_norm_2)
+        if norm_dim == 1 or norm_dim == 2:
+            fea_norm_sum_1 = torch.mean(fea_norm_1)
+            fea_norm_sum_2 = torch.mean(fea_norm_2)
 
         
     

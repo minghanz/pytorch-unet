@@ -98,7 +98,7 @@ def main():
     height = 96
     source='TUM'
     if source=='CARLA':
-        root_dir = root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
+        root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
     elif source == 'TUM':
         root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
     weight_map_mode = False
@@ -183,14 +183,14 @@ def main():
                 else:
                     if pca_in_loss or subset_in_loss:
                         feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
-                            model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+                            model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw )
                     else:
                         feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
                             model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
                     
 
             if iter_overall == 0:
-                writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2) )
+                writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
 
             # feature1 = feature1_full[:,0:3,:,:]
             # feature2 = feature2_full[:,0:3,:,:]
@@ -392,7 +392,7 @@ def main():
                         else:
                             if pca_in_loss or subset_in_loss:
                                 feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
-                                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+                                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw  )
                             else:
                                 feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
                                     model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
@@ -404,7 +404,7 @@ def main():
 
 
             if iter_overall % 1000 == 0:
-                model_path_save = os.path.join('saved_models', 'with_color_norm2', 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
+                model_path_save = os.path.join('saved_models', 'with_color_norm3', 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
                 torch.save({
                     'epoch': i_epoch,
                     'model_state_dict': model_overall.model_UNet.state_dict(),

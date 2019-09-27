@@ -111,7 +111,7 @@ class UNetInnerProd(nn.Module):
         if self.pose_predict_mode:
             self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
 
-    def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2):
+    def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw):
         if self.weight_map_mode:
             feature1, feature1_w = self.model_UNet(img1)
             feature2, feature2_w = self.model_UNet(img2)
@@ -156,7 +156,7 @@ class UNetInnerProd(nn.Module):
             else:
                 if self.pca_in_loss or self.subset_in_loss:
                     loss, innerp_loss, feat_norm, mask_norm_1, mask_norm_2 = self.model_loss(feature1, feature2, 
-                        dep1, dep2, pose1_2, img1, img2, feature1_norm=feature1_norm, feature2_norm=feature2_norm )
+                        dep1, dep2, pose1_2, img1_raw, img2_raw, feature1_norm=feature1_norm, feature2_norm=feature2_norm )
                     return feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1_3, feature2_3, mask_norm_1, mask_norm_2
                 else:
                     loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, 
@@ -168,14 +168,12 @@ class UNetInnerProd(nn.Module):
 
     def set_norm_level(self, i_batch):
         self.model_loss.set_norm_level(i_batch)
-        if i_batch < 2000:
+        if i_batch < 3000:
             self.model_loss.min_norm_thresh = 0
-        elif i_batch < 4000:
-            self.model_loss.min_norm_thresh = 0.1
         elif i_batch < 6000:
-            self.model_loss.min_norm_thresh = 0.2
+            self.model_loss.min_norm_thresh = 0.1
         else:
-            self.model_loss.min_norm_thresh = 0.3
+            self.model_loss.min_norm_thresh = 0.2
         return
 
 
@@ -421,7 +419,7 @@ class innerProdLoss(nn.Module):
                     else:
                         inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 * feature1_w.transpose(1, 2) * feature1_w ) + \
                             torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 * feature2_w.transpose(1, 2) * feature2_w ) - \
-                            torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
+                            2 *torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
                 else:
                     if not self.weight_map_mode:
                         inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color ) # * gramian_feat

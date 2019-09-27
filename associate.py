@@ -115,7 +115,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
 
-    root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
+    root_dir = '/mnt/storage/minghanz_data/TUM/to_be_processed'
     folders = glob.glob(root_dir+'/rgbd*')
     for folder in folders :
         rgb_file = os.path.join(folder, 'rgb.txt')

@@ -90,7 +90,8 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         # print(pcl_diff.device)
         assert not torch.isnan(pcl_diff).any()
         assert not torch.isinf(pcl_diff).any()
-        pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
+        # pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
+        pcl_diff_exp = torch.exp(-pcl_diff / (dist_coef * dist_coef) )
 
         # pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
         # pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)

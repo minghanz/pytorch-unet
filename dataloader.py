@@ -253,6 +253,10 @@ def load_from_TUM(folders):
             dep_file_name = strs[3]
 
             out_of_bound = False
+            if poses_qt_list[0][0] >= tstamp:
+                # skip until imu time is earlier than current image
+                continue
+
             while poses_qt_list[j_qt][0] < tstamp:
                 # print(poses_qt_list[j_qt][0])
                 j_qt += 1
@@ -277,7 +281,7 @@ def load_from_TUM(folders):
                 t1 = poses_qt_list[j_qt][0]
 
                 if t1 - t0 > 0.1: 
-                    print('No pose near current time, skipped!')
+                    # print('No pose near current time, skipped!')
                     continue
 
                 w0 = (t1 - tstamp)/(t1 - t0)
@@ -345,7 +349,7 @@ def load_from_TUM(folders):
         for i in range(len(paths_dep)-1):
             frame_num = i
 
-            for j in range(5, min(15, len(paths_dep)-i), 2 ):
+            for j in range(1, min(10, len(paths_dep)-i), 2 ):
                 frame_next = i+j
 
                 pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
@@ -488,11 +492,13 @@ class ImgPoseDataset(Dataset):
         elif 'TUM' in root_dir:
             self.folders = glob.glob(root_dir+'/rgbd*')
             self.pair_seq = load_from_TUM(folders=self.folders)
+        
+        self.len_pairs = len(self.pair_seq)
 
         self.transform = transform
 
     def __len__(self):
-        return len(self.pair_seq)
+        return self.len_pairs
 
     def __getitem__(self, idx):
         image_1 = process_rgb_file(self.pair_seq[idx]['image_path 1'])

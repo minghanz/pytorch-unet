@@ -54,65 +54,47 @@ def feat_svd_flat_single(feat_flat):
 
 class UNetInnerProd(nn.Module):
     def __init__(self,
-        in_channels=1,
-        n_classes=2,
-        depth=5,
-        wf=6,
-        padding=False,
-        batch_norm=False,
-        up_mode='upconv',
-        device= torch.device('cuda'),
-        width=96, 
-        height=72, 
-        diff_mode=True,
-        kernalize=False,
-        sparsify_mode=1,
-        color_in_cost=False, 
-        L2_norm=True, 
-        pose_predict_mode=False, 
-        source='TUM', 
-        weight_map_mode=False, 
-        min_dist_mode=True, 
-        pretrained_mode=False, 
-        pca_in_loss=False, 
-        subset_in_loss=False
+        loss_options,
+        unet_options,
+        device= torch.device('cuda')
     ):
         super(UNetInnerProd, self).__init__()
         self.device = device
+        self.opt_loss = loss_options
+        self.opt_unet = unet_options
 
-        assert sparsify_mode == 1 or sparsify_mode == 2 or sparsify_mode == 3 or sparsify_mode == 4 or sparsify_mode == 5 or sparsify_mode == 6, "unrecognized sparsity mode!"
-        self.sparsify_mode = sparsify_mode
-        self.weight_map_mode = weight_map_mode
-        self.min_dist_mode = min_dist_mode
-        self.pca_in_loss = pca_in_loss
-        self.subset_in_loss = subset_in_loss
+        self.model_init(self.opt_unet, self.device)
 
-        if pretrained_mode:
+        self.model_loss = innerProdLoss(device, self.opt_loss).to(device)
+        
+        if self.opt_unet.pose_predict_mode:
+            self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
+    
+    def model_init(self, opt_unet, device):
+        if opt_unet.pretrained_mode:
             def final_act(x):
                 return 0.05 * x
             def sigmoid_scaled(x):
                 sig = nn.Sigmoid()
                 x = 2 * sig(x*0.4) - 1
                 return x
-            if self.weight_map_mode:
-                self.model_UNet = smp.UnetWithLastOut('resnet34', encoder_weights='imagenet', classes=n_classes, activation=sigmoid_scaled ).to(device)
+
+            if opt_unet.weight_map_mode:
+                self.model_UNet = smp.UnetWithLastOut('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=sigmoid_scaled ).to(device)
             else: # 2/3/4
-                self.model_UNet = smp.Unet('resnet34', encoder_weights='imagenet', classes=n_classes, activation=final_act ).to(device)
+                self.model_UNet = smp.Unet('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=final_act ).to(device)
+
             for param in self.model_UNet.encoder.parameters():
                 param.requires_grad = False 
             # pretrained_model = models.resnet34(pretrained=True)
             # self.model_Unet = models.unet.DynamicUnet(encoder=pretrained_model, n_classes=n_classes).to(device)
         else:
-            self.model_UNet = UNet(in_channels, n_classes, depth, wf, padding, batch_norm, up_mode).to(device)
+            self.model_UNet = UNet(opt_unet.in_channels, opt_unet.n_classes, opt_unet.depth, opt_unet.wf, opt_unet.padding, opt_unet.batch_norm, opt_unet.up_mode).to(device)
 
-        self.model_loss = innerProdLoss(device, width, height, diff_mode, kernalize, sparsify_mode, weight_map_mode, min_dist_mode, \
-            color_in_cost, L2_norm, source).to(device)
-        self.pose_predict_mode = pose_predict_mode
-        if self.pose_predict_mode:
-            self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
+        # return model_UNet
 
     def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw):
-        if self.weight_map_mode:
+        if self.opt_unet.weight_map_mode:
             feature1, feature1_w = self.model_UNet(img1)
             feature2, feature2_w = self.model_UNet(img2)
         else: # 2/3/4
@@ -124,14 +106,33 @@ class UNetInnerProd(nn.Module):
         ## process feature to SVD
         feature1_norm = None
         feature2_norm = None
-        if self.pca_in_loss or self.subset_in_loss:
+        if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
             feature1_3, feature1_svd = feat_svd(feature1)
+            # mm1 = torch.cuda.memory_cached()
+            # b = feature1.shape[0]
+            # c = feature1.shape[1]
+            # h = feature1.shape[2]
+            # w = feature1.shape[3]
+            # feat_flat = feature1.reshape(b, c, h*w)
+            # feat_mean = feat_flat.mean(dim=2, keepdim=True)
+            # feat_flat = feat_flat - feat_mean.expand_as(feat_flat)
+            # u, s, v = torch.svd(feat_flat)
+            # feat_new = torch.bmm( u.transpose(1,2), feat_flat) # b*3*n
+            # feature1_svd = feat_new.reshape(b,c,h,w)
+            # feature1_3 = feature1_svd[:,0:3,:,:]
+            # mm2 = torch.cuda.memory_cached()
+            # print('first:', mm2-mm1)
+            # mm1 = torch.cuda.memory_cached()
+            # feature1_3, feature1_svd = feat_svd(feature1)
+            # mm2 = torch.cuda.memory_cached()
+            # print('second', mm2-mm1)
+
             feature2_3, feature2_svd = feat_svd(feature2)
             feature1_norm = torch.norm(feature1_svd, dim=1)
             feature2_norm = torch.norm(feature2_svd, dim=1)
             feature1_norm = feature1_norm / torch.max(feature1_norm)
             feature2_norm = feature2_norm / torch.max(feature2_norm)
-            if self.pca_in_loss:
+            if self.opt_loss.pca_in_loss:
                 feature1 = feature1_svd
                 feature2 = feature2_svd
         
@@ -140,7 +141,7 @@ class UNetInnerProd(nn.Module):
         dep2.requires_grad = False
         pose1_2.requires_grad = False
 
-        if self.pose_predict_mode:
+        if self.opt_unet.pose_predict_mode:
             # with pose predictor
             euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
             pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
@@ -149,12 +150,12 @@ class UNetInnerProd(nn.Module):
             return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred
         else:
             # without pose predictor
-            if self.weight_map_mode:
+            if self.opt_unet.weight_map_mode:
                 loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = self.model_loss(feature1, feature2, 
                     dep1, dep2, pose1_2, img1, img2, feature1_w=feature1_w, feature2_w=feature2_w)
                 return feature1, feature2, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 
             else:
-                if self.pca_in_loss or self.subset_in_loss:
+                if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
                     loss, innerp_loss, feat_norm, mask_norm_1, mask_norm_2 = self.model_loss(feature1, feature2, 
                         dep1, dep2, pose1_2, img1_raw, img2_raw, feature1_norm=feature1_norm, feature2_norm=feature2_norm )
                     return feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1_3, feature2_3, mask_norm_1, mask_norm_2
@@ -177,84 +178,117 @@ class UNetInnerProd(nn.Module):
         return
 
 
+def gen_rand_pose(source, noise_trans_scale, device):
+    ### do not use np.random to generate random number because they can not be tracked by pytorch backend
+    # trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
+    # rot_noise = np.random.normal(scale=3.0, size=(3,))
+    #####################################################################################################
+    trans_noise = torch.randn((3), dtype=torch.float, device=device) * noise_trans_scale
+    # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
+    rot_noise = torch.zeros(3, dtype=torch.float, device=device)
+    
+    if source=='CARLA':
+        noise_euler_tensor = torch.stack([ trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2] ]).unsqueeze(0)
+        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
+    elif source=='TUM':
+        noise_euler_tensor = torch.stack([trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]]).unsqueeze(0)
+        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
+    pose1_2_noise.requires_grad = False
+
+    return pose1_2_noise
+
+def gen_noisy_pose(pose1_2_noise, mean_trans_2):
+    ##### move ot center, purturb, rotate back
+    device = mean_trans_2.device
+
+    trans = torch.tensor([0., 0., 0.], dtype=torch.float, device=device)
+
+    trans_rot = torch.stack([-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2]])
+    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
+    trans_back = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
+    trans_back.requires_grad = False
+
+    trans_rot = torch.stack([mean_trans_2[0], mean_trans_2[1], mean_trans_2[2]])
+    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
+    trans_forth = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
+    trans_forth.requires_grad = False
+
+    pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(pose1_2_noise, trans_back) )
+    return pose1_2_noisy
+
+
 class innerProdLoss(nn.Module):
-    def __init__(self, device, width=96, height=72, diff_mode=True, kernalize=False, sparsify_mode=False, weight_map_mode=False, min_dist_mode=True, 
-            color_in_cost=False, L2_norm=True, source='CARLA'):
+    def __init__(self, device, opt_loss):
+    # def __init__(self, device, width=96, height=72, diff_mode=True, kernalize=False, sparsify_mode=False, weight_map_mode=False, min_dist_mode=True, 
+    #         color_in_cost=False, L2_norm=True, source='CARLA'):
         super(innerProdLoss, self).__init__()
         self.device = device
+        self.opt = opt_loss
         # K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ])
         # K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
         # input: x front, y right (aligned with u direction), z down (aligned with v direction) [CARLA definition]
         # output: u, v, 1
-        self.source = source
-        self.options_from_source(width=width, height=height)
+        
+        self.options_from_source()
 
-        inv_K = torch.Tensor(np.linalg.inv(self.K)).to(self.device)
-        self.K = torch.Tensor(self.K).to(self.device)
+        # K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
+        self.gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
 
-        u_grid = torch.Tensor(np.arange(width) )
-        v_grid = torch.Tensor(np.arange(height) )
-        uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
-        vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
-        self.width = width
-        self.height = height
-        self.uv1_grid = torch.stack( (uu_grid.to(self.device), vv_grid.to(self.device), torch.ones(uu_grid.size()).to(self.device) ), dim=0 ) # 3*N, correspond to u,v,1
-        self.yz1_grid = torch.mm(inv_K, self.uv1_grid).to(self.device) # 3*N, corresponding to x,y,z
-        self.diff_mode = diff_mode
-        self.kernalize = kernalize
-        self.color_in_cost = color_in_cost
-        self.L2_norm = L2_norm
-        self.sparsify_mode = sparsify_mode
-        self.weight_map_mode = weight_map_mode
-        self.min_dist_mode = min_dist_mode
+        inv_K = torch.tensor(np.linalg.inv(self.K), dtype=torch.float).to(self.device)
+        self.K = torch.tensor(self.K).to(self.device)
+
+        # self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+        self.gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+        
+
         self.min_norm_thresh = 0
 
         self.w_normalize = nn.Softmax(dim=2)
 
-    def options_from_source(self, width, height):
+    def gen_cam_K(self, source, width, height):
+        '''
+            CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+            CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+            TUM xyz is right(u)-down(v)-front
+            Output is nparray
+        '''
+        assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
+        if source == 'CARLA':
+            fx=int(width/2)
+            fy=int(width/2)
+            cx=int(width/2)
+            cy=int(height/2)
+            self.K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+        elif source == 'TUM':
+            fx = width/640.0*525.0  # focal length x
+            fy = height/480.0*525.0  # focal length y
+            cx = width/640.0*319.5  # optical center x
+            cy = height/480.0*239.5  # optical center y
+            self.K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+
+    def gen_uvgrid(self, width, height, inv_K):
+        device = inv_K.device
+        u_grid = torch.tensor(np.arange(width), dtype=torch.float, device=device )
+        v_grid = torch.tensor(np.arange(height), dtype=torch.float, device=device )
+        uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
+        vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
+        self.uv1_grid = torch.stack( (uu_grid, vv_grid, torch.ones(uu_grid.size(), dtype=torch.float, device=device) ), dim=0 ) # 3*N, correspond to u,v,1
+        self.yz1_grid = torch.mm(inv_K, self.uv1_grid) # 3*N, corresponding to x,y,z
+
+    def options_from_source(self):
         '''
         CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
         CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
         TUM xyz is right(u)-down(v)-front
         dist_coef is scaling in the exponential in the RBF kernel, related to the movement and scenario scale in the data
         '''
-        assert self.source == 'CARLA' or self.source == 'TUM', 'source unrecognized'
-        if self.source == 'CARLA':
-            fx=int(width/2)
-            fy=int(width/2)
-            cx=int(width/2)
-            cy=int(height/2)
-            self.K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+        assert self.opt.source == 'CARLA' or self.opt.source == 'TUM', 'source unrecognized'
+        if self.opt.source == 'CARLA':
             # self.dist_coef = 1e-1
             self.noise_trans_scale = 1.0
-        elif self.source == 'TUM':
-            fx = width/640.0*525.0  # focal length x
-            fy = height/480.0*525.0  # focal length y
-            cx = width/640.0*319.5  # optical center x
-            cy = height/480.0*239.5  # optical center y
-            self.K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+        elif self.opt.source == 'TUM':
             # self.dist_coef = 1e-1
             self.noise_trans_scale = 0.1
-
-    def gen_rand_pose(self):
-        # trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
-        # rot_noise = np.random.normal(scale=3.0, size=(3,))
-        trans_noise = torch.randn((3), dtype=torch.float, device=self.device) * self.noise_trans_scale
-        # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
-        rot_noise = torch.zeros(3, dtype=torch.float, device=self.device)
-        
-        if self.source=='CARLA':
-            # self.pose1_2_noise = pose_from_euler_t(trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2]) # for carla
-            noise_euler_tensor = torch.stack([ trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2] ]).unsqueeze(0)
-            self.pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=self.device).squeeze(0)
-        elif self.source=='TUM':
-            # self.pose1_2_noise = pose_from_euler_t(trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]) # for TUM
-            noise_euler_tensor = torch.stack([trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]]).unsqueeze(0)
-            self.pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=self.device).squeeze(0)
-
-        # self.pose1_2_noise = torch.tensor(self.pose1_2_noise).to(self.device)
-        # self.pose1_2_noise = torch.tensor(self.pose1_2_noise, dtype=torch.float, device=self.device)
-        self.pose1_2_noise.requires_grad = False
 
     def set_norm_level(self, i_batch):
         # if i_batch < 500:
@@ -293,85 +327,58 @@ class innerProdLoss(nn.Module):
         # if self.sparsify:
         #     norm_mode = 0
         # else:
-        if self.sparsify_mode == 1:
+        if self.opt.sparsify_mode == 1:
             # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
             norm_mode = True
             norm_dim = 1
-        elif self.sparsify_mode == 2 or self.sparsify_mode == 5:
+        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
             # normalize L1 norm of each channel, output L2 norm of each channel
             norm_mode = True
             norm_dim = 2
-        elif self.sparsify_mode == 3:
+        elif self.opt.sparsify_mode == 3:
             # no normalization, output L1 norm of each channel
             norm_mode = False
             norm_dim = 2
-        elif self.sparsify_mode == 4:
+        elif self.opt.sparsify_mode == 4:
             # no normalization, output L2 norm of each pixel
             norm_mode = False
             norm_dim = 1
-        elif self.sparsify_mode == 6:
+        elif self.opt.sparsify_mode == 6:
             # no normalization, no norm output
             norm_mode = False
             norm_dim = 0
             
-        # gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.kernalize, L2_norm=self.L2_norm) # could be kernelized or not
-        gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim) # could be kernelized or not
+        ################# inner product of features, position and color ####################################
+        gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim) # could be kernelized or not
         pcl_diff_exp = kern_mat(xyz1, xyz2_trans, self.dist_coef)
 
-        if self.min_dist_mode:
-            gramian_f1, _ = gramian(feature1, feature1, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim)
+        if self.opt.min_dist_mode:
+            gramian_f1, _ = gramian(feature1, feature1, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim)
             pcl_diff_1 = kern_mat(xyz1, xyz1, self.dist_coef)
-            gramian_f2, _ = gramian(feature2, feature2, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim)
+            gramian_f2, _ = gramian(feature2, feature2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim)
             pcl_diff_2 = kern_mat(xyz2_trans, xyz2_trans, self.dist_coef)
 
-        if self.color_in_cost:
-            gramian_color, _ = gramian(img1, img2, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim )
-            if self.min_dist_mode:
-                gramian_c1, _ = gramian(img1, img1, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim )
-                gramian_c2, _ = gramian(img2, img2, norm_mode=norm_mode, kernalize=self.kernalize, norm_dim=norm_dim )
-                
-                # print(img1)
+        if self.opt.color_in_cost:
+            gramian_color, _ = gramian(img1, img2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
+            if self.opt.min_dist_mode:
+                gramian_c1, _ = gramian(img1, img1, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
+                gramian_c2, _ = gramian(img2, img2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
         
         # print('now original')
         # draw3DPts(xyz1, xyz2, img1, img2)
         # print('now matched')
         # draw3DPts(xyz1, xyz2_trans, img1, img2)
+        ######################################################################################################
 
-        # sparsify mode 1 and 6 output norm=0
-        if self.sparsify_mode == 5:
-            fea_norm_sum_to_loss = fea_norm_sum * 0
-        else:
-            fea_norm_sum_to_loss = fea_norm_sum * self.norm_scale
-
-        if self.diff_mode:
-            if self.source=='TUM':
+        ######################## inner product or distance of two functions ##################################
+        if self.opt.diff_mode:
+            if self.opt.source=='TUM':
                 ### 1. perturb the scenario points by moving them to the center first
                 mean_trans_2 = xyz2_trans.mean(dim=(0,2))
-                # trans_back = pose_from_euler_t(-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2], 0, 0, 0)
-                # # trans_back = torch.Tensor(trans_back).to(self.device)
-                # trans_back = torch.tensor(trans_back, dtype=torch.float, device=self.device)
-                trans = torch.tensor([0., 0., 0.], dtype=torch.float, device=self.device)
-
-                trans_rot = torch.stack([-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2]])
-                trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
-                trans_back = pose_from_euler_t_Tensor(trans_euler, device=self.device).squeeze(0)
-
-                trans_back.requires_grad = False
-
-                # trans_forth = pose_from_euler_t(mean_trans_2[0], mean_trans_2[1], mean_trans_2[2], 0, 0, 0)
-                # # trans_forth = torch.Tensor(trans_forth).to(self.device)
-                # trans_forth = torch.tensor(trans_forth, dtype=torch.float, device=self.device)
-
-                trans_rot = torch.stack([mean_trans_2[0], mean_trans_2[1], mean_trans_2[2]])
-                trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
-                trans_forth = pose_from_euler_t_Tensor(trans_euler, device=self.device).squeeze(0)
-
-                trans_forth.requires_grad = False
-
-                pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(self.pose1_2_noise, trans_back) )
+                pose1_2_noisy = gen_noisy_pose(self.pose1_2_noise, mean_trans_2)
                 xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_trans_homo)[:, 0:3, :] # B*3*N
 
-            elif self.source=='CARLA':
+            elif self.opt.source=='CARLA':
                 ## 2. directly perturb camera pose
                 pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
                 xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
@@ -381,57 +388,54 @@ class innerProdLoss(nn.Module):
             ### 3. treat original points (without matching) as perturbation
             # pcl_diff_exp_noisy = kern_mat(xyz1, xyz2, self.dist_coef)
 
-            # pcl_diff_exp_diff = pcl_diff_exp - pcl_diff_exp_noisy
-            if self.color_in_cost:
-                if self.sparsify_mode != 1:
-                    # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat * gramian_color ) #  * gramian_feat
-                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
-                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat * gramian_color )
-                else:
+            if self.opt.color_in_cost:
+                if self.opt.opt_unet.weight_map_mode: ### use a weight layer
                     inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
                     inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
-                inner_neg = inner_neg_noisy / inner_neg_match
-            else:
-                if self.sparsify_mode != 1:
-                    # inner_neg = - torch.sum(pcl_diff_exp_diff * gramian_feat ) #  * gramian_feat
-                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat  )
-                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat )
                 else:
+                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
+                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat * gramian_color )
+            else:
+                if self.opt.opt_unet.weight_map_mode:
                     inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
                     inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
-                inner_neg = inner_neg_noisy / inner_neg_match
-                # print(inner_neg_match)
+                else:
+                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat  )
+                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat )
 
-            final_loss = inner_neg
-            if self.sparsify_mode != 1:
-                final_loss = final_loss + fea_norm_sum_to_loss
+            inner_neg = inner_neg_noisy / inner_neg_match
 
-            # print('inner_neg', inner_neg)
             # print('now noisy')
             # draw3DPts(xyz1, xyz2_trans_noisy, img1, img2)
-
         else:
-            if self.color_in_cost:
-                if self.min_dist_mode:
-                    if not self.weight_map_mode:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 ) + \
-                            torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 ) - 2 * torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
-                    else:
+            if self.opt.color_in_cost:
+                if self.opt.min_dist_mode: 
+                # distance between functions
+                    if self.opt.opt_unet.weight_map_mode:
                         inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 * feature1_w.transpose(1, 2) * feature1_w ) + \
-                            torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 * feature2_w.transpose(1, 2) * feature2_w ) - \
-                            2 *torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
-                else:
-                    if not self.weight_map_mode:
-                        inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color ) # * gramian_feat
+                                    torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 * feature2_w.transpose(1, 2) * feature2_w ) - \
+                                    2*torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
                     else:
-                        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) # * gramian_feat
+                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 ) + \
+                                    torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 ) - \
+                                    2*torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
+                else:  
+                # negative inner product 
+                    if self.opt.opt_unet.weight_map_mode:
+                        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
+                    else:
+                        inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
             else:
-                if self.min_dist_mode:
-                    if not self.weight_map_mode:
+                if self.opt.min_dist_mode:
+                # distance between functions
+                    if self.opt.opt_unet.weight_map_mode:
+                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * feature1_w.transpose(1, 2) * feature1_w ) + \
+                                    torch.sum(pcl_diff_2 * gramian_f2 * feature2_w.transpose(1, 2) * feature2_w ) - \
+                                    2*torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
+                    else:
                         inner_neg = torch.sum(pcl_diff_1 * gramian_f1 ) + \
-                            torch.sum(pcl_diff_2 * gramian_f2 ) - 2 * torch.sum(pcl_diff_exp * gramian_feat )
-                        # print('no color, min_dist, no mask')
-
+                                    torch.sum(pcl_diff_2 * gramian_f2 ) - \
+                                    2*torch.sum(pcl_diff_exp * gramian_feat )
                         # a_b = torch.sum(pcl_diff_exp * gramian_feat )
                         # a_a = torch.sum(pcl_diff_1 * gramian_f1 )
                         # b_b = torch.sum(pcl_diff_2 * gramian_f2 )
@@ -440,35 +444,39 @@ class innerProdLoss(nn.Module):
                         # # print('b_b', b_b)
                         # inner_neg = -a_b / \
                         #     torch.sqrt(a_a * b_b )
-
-                        # print('inner_neg', inner_neg)
-                    else:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * feature1_w.transpose(1, 2) * feature1_w ) + \
-                        torch.sum(pcl_diff_2 * gramian_f2 * feature2_w.transpose(1, 2) * feature2_w ) - \
-                        torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w ) 
-                    
-                elif not self.weight_map_mode:
-                    inner_neg = - torch.mean(pcl_diff_exp * gramian_feat ) # * gramian_feat
                 else:
-                    inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w ) # * gramian_feat
+                # negative inner product 
+                    if self.opt.opt_unet.weight_map_mode:
+                        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
+                    else:
+                        inner_neg = - torch.mean(pcl_diff_exp * gramian_feat ) 
 
-            final_loss = inner_neg
-            if not self.weight_map_mode:
-                final_loss = final_loss + fea_norm_sum_to_loss
+        final_loss = inner_neg
+        ############################################################################################
+
+        ############################## penalty on feature norm #####################################
+        # sparsify mode 1 and 6 output norm=0
+        if self.opt.sparsify_mode == 5:
+            fea_norm_sum_to_loss = fea_norm_sum * 0
+        else:
+            fea_norm_sum_to_loss = fea_norm_sum * self.norm_scale
+
+        if not self.opt.opt_unet.weight_map_mode:
+            final_loss = final_loss + fea_norm_sum_to_loss
+        #############################################################################################
         
-        if pose1_2_pred is not None:
-            xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
-            pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
-            if self.color_in_cost:
-                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
-            else:
-                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
+        # if self.opt.opt_unet.pose_predict_mode: # obselete
+        #     xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
+        #     pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
+        #     if self.opt.color_in_cost:
+        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
+        #     else:
+        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
 
-            final_loss = final_loss + inner_neg_pred
-
+        #     final_loss = final_loss + inner_neg_pred
             
-            return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
-            # return final_loss, inner_neg, inner_neg_pred
+        #     return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
+        #     # return final_loss, inner_neg, inner_neg_pred
 
         return final_loss, inner_neg, fea_norm_sum
         # return final_loss, inner_neg
@@ -477,7 +485,6 @@ class innerProdLoss(nn.Module):
     def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2, feature1_w=None, feature2_w=None, pose1_2_pred=None, feature1_norm=None, feature2_norm=None): # img1 and img2 only for visualization
         
         ### flatten depth and feature maps ahead of other operations to make pixel selection easier
-        ### add a pixel selection module for the cases where not all pixels are included in the CVO loss
         batch_size = depth1.shape[0]
         n_pts_1 = depth1.shape[2]*depth1.shape[3]
         n_pts_2 = depth2.shape[2]*depth2.shape[3]
@@ -493,7 +500,7 @@ class innerProdLoss(nn.Module):
         img_flat_1 = img1.reshape(batch_size, 3, n_pts_1) # B*C*N1
         img_flat_2 = img2.reshape(batch_size, 3, n_pts_2) # B*C*N2
 
-        if self.weight_map_mode:
+        if self.opt.opt_unet.weight_map_mode:
             fea_w_flat_1 = feature1_w.reshape(batch_size, 1, n_pts_1)  # B*C*N1
             fea_w_flat_2 = feature2_w.reshape(batch_size, 1, n_pts_2)  # B*C*N2
             # fea_w_flat_1 = self.w_normalize( feature1_w.reshape(batch_size, 1, n_pts_1) ) # B*C*N1
@@ -509,8 +516,10 @@ class innerProdLoss(nn.Module):
             feature2_norm_flat = [None]*int(batch_size)
             
 
+        if self.opt.diff_mode:
+            self.pose1_2_noise = gen_rand_pose(self.opt.source, self.noise_trans_scale, self.device)
 
-        #################################################
+        #################### calculate loss by going over each sample in the batch ##########################
         final_loss = torch.tensor(0., device=self.device)
         inner_neg = torch.tensor(0., device=self.device)
         fea_norm_sum = torch.tensor(0., device=self.device)
@@ -520,7 +529,7 @@ class innerProdLoss(nn.Module):
         mask_feat_norm_2 = [None]*int(batch_size)
 
         for i in range(batch_size):
-            if self.weight_map_mode:
+            if self.opt.opt_unet.weight_map_mode:
                 xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel, fea_w_flat_1_sel = self.selected(depth1_flat[i], 
                                                                     fea_flat_1[i], img_flat_1[i], fea_w_flat_1[i]) #3*N
                 xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel, fea_w_flat_2_sel = self.selected(depth2_flat[i], 
@@ -555,7 +564,7 @@ class innerProdLoss(nn.Module):
             
 
         if pose1_2_pred is None:
-            if self.weight_map_mode:
+            if self.opt.opt_unet.weight_map_mode:
                 return final_loss, inner_neg, fea_norm_sum, feature1_w, feature2_w
                 # return final_loss, inner_neg, fea_w_1, fea_w_2
             elif feature1_norm is not None and feature2_norm is not None:
@@ -586,7 +595,7 @@ class innerProdLoss(nn.Module):
         # mask_feat_norm = feat_norm >= 0.2 * torch.max(feat_norm)
         # print(torch.sum(mask_feat_norm.to(torch.float32)))
 
-        # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.height - 5)
+        # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.opt.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.opt.height - 5)
         mask = (depth_flat_sample.squeeze() > 0)
         
         if fea_norm_flat_sample is not None:

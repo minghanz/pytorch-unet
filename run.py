@@ -15,6 +15,8 @@ import os
 from network_modules import UNetInnerProd, innerProdLoss
 import time
 
+from options import LossOptions, UnetOptions
+
 def vis_feat(feature, neg=False):
     # only keep the positive or negative part of the feature map, normalize the max to 1 
     # (removing border part because they sometimes are too large)
@@ -88,48 +90,22 @@ def main():
     # loss_model = innerProdLoss(device=device).to(device)
     # optim = torch.optim.Adam(model.parameters())
 
-    diff_mode = False
-    kernalize = True
-    # sparsify = False
-    color_in_cost = True
-    L2_norm = False
-    pose_predict_mode = False
-    width = 128 # (72*96) (96, 128) (240, 320)
-    height = 96
-    source='TUM'
-    if source=='CARLA':
-        root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
-    elif source == 'TUM':
-        root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
-    weight_map_mode = False
-    min_dist_mode = True # distance between functions
-    sparsify_mode = 5 # 1 fix L2 across channels, 2 max L2 fix L1 across pixels, 3 min L1, 4 min L2 across channels, 5 fix L1 across pixels, 
-                      # 6 no normalization, no norm output
-
-    pretrained_mode = False
-    pca_in_loss = False
-    subset_in_loss = True
-    # if pretrained_mode:
-    #     from segmentation_models_pytorch.encoders import get_preprocessing_fn
-    #     preprocess_input_fn = get_preprocessing_fn('resnet34', pretrained='imagenet')
-    # else:
-    #     preprocess_input_fn = None
+    unet_options = UnetOptions()
+    unet_options.setto()
+    loss_options = LossOptions(unet_options)
     
     from segmentation_models_pytorch.encoders import get_preprocessing_fn
     preprocess_input_fn = get_preprocessing_fn('resnet34', pretrained='imagenet')
 
-    model_overall = UNetInnerProd(in_channels=3, n_classes=16, depth=5, wf=2, padding=True, up_mode='upsample', device=device, 
-                                    diff_mode=diff_mode, kernalize=kernalize, sparsify_mode=sparsify_mode, color_in_cost=color_in_cost, L2_norm=L2_norm, 
-                                    width=width, height=height, pose_predict_mode=pose_predict_mode, source=source, 
-                                    weight_map_mode=weight_map_mode, min_dist_mode=min_dist_mode, pretrained_mode=pretrained_mode, pca_in_loss=pca_in_loss, subset_in_loss=subset_in_loss )
+    model_overall = UNetInnerProd(unet_options=unet_options, device=device, loss_options=loss_options )
     lr = 1e-4
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
     ### Create dataset
     ### for TUM dataset, you need to run associate.py on a folder of unzipped folders of TUM data sequences
     img_pose_dataset = ImgPoseDataset(
-        root_dir = root_dir, 
-        transform=transforms.Compose([Rescale(output_size=(height,width), post_fn=preprocess_input_fn), ToTensor(device=device) ]) )
+        root_dir = loss_options.root_dir, 
+        transform=transforms.Compose([Rescale(output_size=(loss_options.height, loss_options.width), post_fn=preprocess_input_fn), ToTensor(device=device) ]) )
     
     
     data_loader_train, data_loader_val = split_train_val(img_pose_dataset, 0.1)
@@ -143,6 +119,7 @@ def main():
     iter_overall = 0
     lr_change_time = 0
     start_time = time.time()
+    ctime = time.ctime()
     overall_time = 0
     for i_epoch in range(epochs):
         print('entering epoch', i_epoch) 
@@ -161,27 +138,18 @@ def main():
             pose1_2 = sample_batch['rela_pose']
             euler1_2 = sample_batch['rela_euler']
             
-            # feature1 = model(img1)
-            # feature2 = model(img2)
-
-            # dep1.requires_grad = False
-            # dep2.requires_grad = False
-
-            # loss = loss_model(feature1, feature2, dep1, dep2, pose1_2)
-            if diff_mode:
-                model_overall.model_loss.gen_rand_pose()
 
             model_overall.set_norm_level(i_batch)
 
-            if pose_predict_mode:
+            if unet_options.pose_predict_mode:
                 feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
                     model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
             else:
-                if weight_map_mode:
+                if unet_options.weight_map_mode:
                     feature1_full, feature2_full, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = \
                         model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
                 else:
-                    if pca_in_loss or subset_in_loss:
+                    if loss_options.pca_in_loss or loss_options.subset_in_loss:
                         feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
                             model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw )
                     else:
@@ -208,7 +176,7 @@ def main():
                 writer.add_image('img1',grid1, iter_overall)
                 writer.add_image('img2',grid2, iter_overall)
 
-                if weight_map_mode:
+                if unet_options.weight_map_mode:
                     # feat_w_1 = feat_w_1 /  torch.max(feat_w_1)
                     # feat_w_2 = feat_w_2 /  torch.max(feat_w_2)
                     feat_w_1 = ( (feat_w_1 + torch.min(feat_w_1)) / (torch.max(feat_w_1) - torch.min(feat_w_1))*255 ).to(torch.uint8)
@@ -224,7 +192,7 @@ def main():
                 # feature1_norm_ = torch.norm(feature1_full, dim=1)
                 # feature2_norm_ = torch.norm(feature2_full, dim=1)
                 # print('before svd:', torch.min(feature1_norm_), torch.max(feature2_norm_))
-                if subset_in_loss:
+                if loss_options.subset_in_loss:
                     grid1_mask = torchvision.utils.make_grid(mask_1)
                     grid2_mask = torchvision.utils.make_grid(mask_2)
 
@@ -232,7 +200,7 @@ def main():
                     writer.add_image('mask2',grid2_mask, iter_overall)
 
 
-                if not (pca_in_loss or subset_in_loss):
+                if not (loss_options.pca_in_loss or loss_options.subset_in_loss):
                     feature1, feat1_allc = feat_svd(feature1_full)
                     feature2, feat2_allc = feat_svd(feature2_full)
 
@@ -326,11 +294,11 @@ def main():
             # writer.add_image('feature_test',grid_test, iter_overall)
 
             writer.add_scalars('loss', {'train': loss}, iter_overall)
-            if sparsify_mode != 6 and sparsify_mode != 1:
+            if loss_options.sparsify_mode != 6 and loss_options.sparsify_mode != 1:
                 # 6 and 1 are the only modes where norm is not calculated 
                 writer.add_scalars('innerp_loss', {'train': innerp_loss}, iter_overall)
                 writer.add_scalar('feat_norm', feat_norm, iter_overall)
-            if pose_predict_mode:
+            if unet_options.pose_predict_mode:
                 writer.add_scalar('innerp_loss_pred', innerp_loss_pred, iter_overall)
 
             ### optimize
@@ -343,8 +311,8 @@ def main():
                 time_duration = time_now - start_time
                 overall_time += time_duration
                 start_time = time_now
-                print('batch', i_batch, 'finished. Time: ', time_duration, overall_time)
-                if pose_predict_mode:
+                print('batch', i_batch, 'finished. Time: {:.1f}, {:.1f}.'.format(time_duration, overall_time), 'Max mem:', torch.cuda.max_memory_allocated() )
+                if unet_options.pose_predict_mode:
                     print('euler:')
                     print(euler1_2)
                     print('pred_euler:')
@@ -382,15 +350,15 @@ def main():
 
                 model_overall.eval()
                 with torch.no_grad():
-                    if pose_predict_mode:
+                    if unet_options.pose_predict_mode:
                         feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
                             model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
                     else:
-                        if weight_map_mode:
+                        if unet_options.weight_map_mode:
                             feature1_full, feature2_full, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = \
                                 model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
                         else:
-                            if pca_in_loss or subset_in_loss:
+                            if loss_options.pca_in_loss or loss_options.subset_in_loss:
                                 feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
                                     model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw  )
                             else:
@@ -404,7 +372,7 @@ def main():
 
 
             if iter_overall % 1000 == 0:
-                model_path_save = os.path.join('saved_models', 'with_color_norm3', 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
+                model_path_save = os.path.join('saved_models', 'with_color_norm', '{}_epoch{:0>2}_{:0>2}.pth'.format(ctime, i_epoch, iter_overall ) )
                 torch.save({
                     'epoch': i_epoch,
                     'model_state_dict': model_overall.model_UNet.state_dict(),

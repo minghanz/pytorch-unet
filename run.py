@@ -86,10 +86,6 @@ def main():
     print('Cuda available?', torch.cuda.is_available())
     device = torch.device('cuda' if torch.cuda.is_available()else 'cpu')
 
-    # model = UNet(in_channels=3, n_classes=3, depth=3, wf=4, padding=True).to(device)
-    # loss_model = innerProdLoss(device=device).to(device)
-    # optim = torch.optim.Adam(model.parameters())
-
     unet_options = UnetOptions()
     unet_options.setto()
     loss_options = LossOptions(unet_options)
@@ -358,7 +354,7 @@ def main():
                 model_overall.eval()
                 with torch.no_grad():
 
-                    losses, output = model_overall(sample_batch)                    
+                    losses, output = model_overall(sample_val)                    
                     loss = losses['final']
                             
                 model_overall.train()

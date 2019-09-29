@@ -52,6 +52,29 @@ def feat_svd_flat_single(feat_flat):
     feat_new = torch.mm( u.transpose(0,1), feat_flat) # b*3*n
     return feat_new
 
+def model_init(opt_unet, device):
+    if opt_unet.pretrained_mode:
+        def final_act(x):
+            return 0.05 * x
+        def sigmoid_scaled(x):
+            sig = nn.Sigmoid()
+            x = 2 * sig(x*0.4) - 1
+            return x
+
+        if opt_unet.weight_map_mode:
+            model_UNet = smp.UnetWithLastOut('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=sigmoid_scaled ).to(device)
+        else: # 2/3/4
+            model_UNet = smp.Unet('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=final_act ).to(device)
+
+        for param in model_UNet.encoder.parameters():
+            param.requires_grad = False 
+        # pretrained_model = models.resnet34(pretrained=True)
+        # self.model_Unet = models.unet.DynamicUnet(encoder=pretrained_model, n_classes=n_classes).to(device)
+    else:
+        model_UNet = UNet(opt_unet.in_channels, opt_unet.n_classes, opt_unet.depth, opt_unet.wf, opt_unet.padding, opt_unet.batch_norm, opt_unet.up_mode).to(device)
+
+    return model_UNet
+
 class UNetInnerProd(nn.Module):
     def __init__(self,
         loss_options,
@@ -63,40 +86,36 @@ class UNetInnerProd(nn.Module):
         self.opt_loss = loss_options
         self.opt_unet = unet_options
 
-        self.model_init(self.opt_unet, self.device)
+        self.model_UNet = model_init(self.opt_unet, self.device)
+        # self.model_init(self.opt_unet, self.device)
 
         self.model_loss = innerProdLoss(device, self.opt_loss).to(device)
         
         if self.opt_unet.pose_predict_mode:
             self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
-    
-    def model_init(self, opt_unet, device):
-        if opt_unet.pretrained_mode:
-            def final_act(x):
-                return 0.05 * x
-            def sigmoid_scaled(x):
-                sig = nn.Sigmoid()
-                x = 2 * sig(x*0.4) - 1
-                return x
 
-            if opt_unet.weight_map_mode:
-                self.model_UNet = smp.UnetWithLastOut('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=sigmoid_scaled ).to(device)
-            else: # 2/3/4
-                self.model_UNet = smp.Unet('resnet34', encoder_weights='imagenet', classes=opt_unet.n_classes, activation=final_act ).to(device)
+    def forward(self, sample_batch):
+        img1 = sample_batch['image 1']
+        img2 = sample_batch['image 2']
+        img1_raw = sample_batch['image 1 raw']
+        img2_raw = sample_batch['image 2 raw']
+        
+        dep1 = sample_batch['depth 1']
+        dep2 = sample_batch['depth 2']
+        idep1 = sample_batch['idepth 1']
+        idep2 = sample_batch['idepth 2']
+        pose1_2 = sample_batch['rela_pose']
+        # euler1_2 = sample_batch['rela_euler']
 
-            for param in self.model_UNet.encoder.parameters():
-                param.requires_grad = False 
-            # pretrained_model = models.resnet34(pretrained=True)
-            # self.model_Unet = models.unet.DynamicUnet(encoder=pretrained_model, n_classes=n_classes).to(device)
-        else:
-            self.model_UNet = UNet(opt_unet.in_channels, opt_unet.n_classes, opt_unet.depth, opt_unet.wf, opt_unet.padding, opt_unet.batch_norm, opt_unet.up_mode).to(device)
+        output = {}   # {0:, 1:, 'pose_pred':}
+        output[0] = {}
+        output[1] = {}
 
-        # return model_UNet
-
-    def forward(self, img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw):
         if self.opt_unet.weight_map_mode:
             feature1, feature1_w = self.model_UNet(img1)
             feature2, feature2_w = self.model_UNet(img2)
+            output[0]['feature_w'] = feature1_w
+            output[1]['feature_w'] = feature2_w   
         else: # 2/3/4
             feature1 = self.model_UNet(img1)
             feature2 = self.model_UNet(img2)
@@ -108,25 +127,6 @@ class UNetInnerProd(nn.Module):
         feature2_norm = None
         if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
             feature1_3, feature1_svd = feat_svd(feature1)
-            # mm1 = torch.cuda.memory_cached()
-            # b = feature1.shape[0]
-            # c = feature1.shape[1]
-            # h = feature1.shape[2]
-            # w = feature1.shape[3]
-            # feat_flat = feature1.reshape(b, c, h*w)
-            # feat_mean = feat_flat.mean(dim=2, keepdim=True)
-            # feat_flat = feat_flat - feat_mean.expand_as(feat_flat)
-            # u, s, v = torch.svd(feat_flat)
-            # feat_new = torch.bmm( u.transpose(1,2), feat_flat) # b*3*n
-            # feature1_svd = feat_new.reshape(b,c,h,w)
-            # feature1_3 = feature1_svd[:,0:3,:,:]
-            # mm2 = torch.cuda.memory_cached()
-            # print('first:', mm2-mm1)
-            # mm1 = torch.cuda.memory_cached()
-            # feature1_3, feature1_svd = feat_svd(feature1)
-            # mm2 = torch.cuda.memory_cached()
-            # print('second', mm2-mm1)
-
             feature2_3, feature2_svd = feat_svd(feature2)
             feature1_norm = torch.norm(feature1_svd, dim=1)
             feature2_norm = torch.norm(feature2_svd, dim=1)
@@ -135,6 +135,15 @@ class UNetInnerProd(nn.Module):
             if self.opt_loss.pca_in_loss:
                 feature1 = feature1_svd
                 feature2 = feature2_svd
+
+            output[0]['feature_svd'] = feature1_svd
+            output[1]['feature_svd'] = feature2_svd
+            output[0]['feature_chnl3'] = feature1_3
+            output[1]['feature_chnl3'] = feature2_3
+            output[0]['feature_norm'] = feature1_norm
+            output[1]['feature_norm'] = feature2_norm
+        output[0]['feature'] = feature1
+        output[1]['feature'] = feature2 
         
 
         dep1.requires_grad = False
@@ -142,30 +151,14 @@ class UNetInnerProd(nn.Module):
         pose1_2.requires_grad = False
 
         if self.opt_unet.pose_predict_mode:
-            # with pose predictor
+        # with pose predictor
             euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
             pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
+            output['pose_pred'] = pose1_2_pred
+            output['euler_pred'] = euler_pred
 
-            loss, innerp_loss, feat_norm, innerp_loss_pred = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, pose1_2_pred=pose1_2_pred)
-            return feature1, feature2, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred
-        else:
-            # without pose predictor
-            if self.opt_unet.weight_map_mode:
-                loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = self.model_loss(feature1, feature2, 
-                    dep1, dep2, pose1_2, img1, img2, feature1_w=feature1_w, feature2_w=feature2_w)
-                return feature1, feature2, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 
-            else:
-                if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
-                    loss, innerp_loss, feat_norm, mask_norm_1, mask_norm_2 = self.model_loss(feature1, feature2, 
-                        dep1, dep2, pose1_2, img1_raw, img2_raw, feature1_norm=feature1_norm, feature2_norm=feature2_norm )
-                    return feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1_3, feature2_3, mask_norm_1, mask_norm_2
-                else:
-                    loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, 
-                        dep1, dep2, pose1_2, img1, img2, feature1_norm=feature1_norm, feature2_norm=feature2_norm )
-                    return feature1, feature2, loss, innerp_loss, feat_norm
-            # loss, innerp_loss, feat_norm = self.model_loss(feature1, feature2, dep1, dep2, pose1_2, img1, img2, feature1_w=feature1_w, feature2_w=feature2_w)
-            # return feature1, feature2, loss, innerp_loss, feat_norm
-            # return feature1, feature2, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 
+        loss, output = self.model_loss(sample_batch, output)
+        return loss, output
 
     def set_norm_level(self, i_batch):
         self.model_loss.set_norm_level(i_batch)
@@ -216,11 +209,40 @@ def gen_noisy_pose(pose1_2_noise, mean_trans_2):
     pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(pose1_2_noise, trans_back) )
     return pose1_2_noisy
 
+def gen_uvgrid(width, height, inv_K):
+    device = inv_K.device
+    u_grid = torch.tensor(np.arange(width), dtype=torch.float, device=device )
+    v_grid = torch.tensor(np.arange(height), dtype=torch.float, device=device )
+    uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
+    vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
+    uv1_grid = torch.stack( (uu_grid, vv_grid, torch.ones(uu_grid.size(), dtype=torch.float, device=device) ), dim=0 ) # 3*N, correspond to u,v,1
+    yz1_grid = torch.mm(inv_K, uv1_grid) # 3*N, corresponding to x,y,z
+    return uv1_grid, yz1_grid
+
+def gen_cam_K(source, width, height):
+    '''
+        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+        TUM xyz is right(u)-down(v)-front
+        Output is nparray
+    '''
+    assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
+    if source == 'CARLA':
+        fx=int(width/2)
+        fy=int(width/2)
+        cx=int(width/2)
+        cy=int(height/2)
+        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+    elif source == 'TUM':
+        fx = width/640.0*525.0  # focal length x
+        fy = height/480.0*525.0  # focal length y
+        cx = width/640.0*319.5  # optical center x
+        cy = height/480.0*239.5  # optical center y
+        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+    return K
 
 class innerProdLoss(nn.Module):
     def __init__(self, device, opt_loss):
-    # def __init__(self, device, width=96, height=72, diff_mode=True, kernalize=False, sparsify_mode=False, weight_map_mode=False, min_dist_mode=True, 
-    #         color_in_cost=False, L2_norm=True, source='CARLA'):
         super(innerProdLoss, self).__init__()
         self.device = device
         self.opt = opt_loss
@@ -231,49 +253,15 @@ class innerProdLoss(nn.Module):
         
         self.options_from_source()
 
-        # K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
-        self.gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
-
+        self.K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
         inv_K = torch.tensor(np.linalg.inv(self.K), dtype=torch.float).to(self.device)
         self.K = torch.tensor(self.K).to(self.device)
 
-        # self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
-        self.gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+        self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
         
-
         self.min_norm_thresh = 0
 
         self.w_normalize = nn.Softmax(dim=2)
-
-    def gen_cam_K(self, source, width, height):
-        '''
-            CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
-            CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
-            TUM xyz is right(u)-down(v)-front
-            Output is nparray
-        '''
-        assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
-        if source == 'CARLA':
-            fx=int(width/2)
-            fy=int(width/2)
-            cx=int(width/2)
-            cy=int(height/2)
-            self.K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
-        elif source == 'TUM':
-            fx = width/640.0*525.0  # focal length x
-            fy = height/480.0*525.0  # focal length y
-            cx = width/640.0*319.5  # optical center x
-            cy = height/480.0*239.5  # optical center y
-            self.K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
-
-    def gen_uvgrid(self, width, height, inv_K):
-        device = inv_K.device
-        u_grid = torch.tensor(np.arange(width), dtype=torch.float, device=device )
-        v_grid = torch.tensor(np.arange(height), dtype=torch.float, device=device )
-        uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
-        vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
-        self.uv1_grid = torch.stack( (uu_grid, vv_grid, torch.ones(uu_grid.size(), dtype=torch.float, device=device) ), dim=0 ) # 3*N, correspond to u,v,1
-        self.yz1_grid = torch.mm(inv_K, self.uv1_grid) # 3*N, corresponding to x,y,z
 
     def options_from_source(self):
         '''
@@ -316,17 +304,27 @@ class innerProdLoss(nn.Module):
         # # if self.sparsify:
         # #     self.norm_scale *= 1e-2
 
-    def calc_loss(self, xyz1, xyz2, pose1_2, feature1, feature2, img1, img2, feature1_w=None, feature2_w=None, pose1_2_pred=None):
+    def calc_loss(self, flat_sel, pose1_2, pose1_2_pred=None):
         '''
         Input points are flat
         '''
+        xyz1 = flat_sel[0]['xyz']
+        xyz2 = flat_sel[1]['xyz']
+        feature1 = flat_sel[0]['feature']
+        feature2 = flat_sel[1]['feature']
+        img1 = flat_sel[0]['img']
+        img2 = flat_sel[1]['img']
+
+        loss = {}
+
+        if self.opt.opt_unet.weight_map_mode:
+            feature1_w = flat_sel[0]['feature_w']
+            feature2_w = flat_sel[1]['feature_w']
+
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans_homo = torch.matmul(pose1_2, xyz2_homo) # B*4*N
         xyz2_trans = xyz2_trans_homo[:, 0:3, :] # B*3*N
 
-        # if self.sparsify:
-        #     norm_mode = 0
-        # else:
         if self.opt.sparsify_mode == 1:
             # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
             norm_mode = True
@@ -465,25 +463,43 @@ class innerProdLoss(nn.Module):
             final_loss = final_loss + fea_norm_sum_to_loss
         #############################################################################################
         
-        # if self.opt.opt_unet.pose_predict_mode: # obselete
-        #     xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
-        #     pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
-        #     if self.opt.color_in_cost:
-        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
-        #     else:
-        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
+        if self.opt.opt_unet.pose_predict_mode: # obselete
+            xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
+            pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
+            if self.opt.color_in_cost:
+                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
+            else:
+                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
 
-        #     final_loss = final_loss + inner_neg_pred
-            
-        #     return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
-        #     # return final_loss, inner_neg, inner_neg_pred
+            final_loss = final_loss + inner_neg_pred
+            loss['CVO_pred'] = inner_neg_pred
 
-        return final_loss, inner_neg, fea_norm_sum
-        # return final_loss, inner_neg
+        loss['final'] = final_loss
+        loss['CVO'] = inner_neg
+        loss['norm'] = fea_norm_sum
 
-
-    def forward(self, feature1, feature2, depth1, depth2, pose1_2, img1, img2, feature1_w=None, feature2_w=None, pose1_2_pred=None, feature1_norm=None, feature2_norm=None): # img1 and img2 only for visualization
+        return loss
         
+
+    def forward(self, sample_batch, output): # img1 and img2 only for visualization
+        
+        img1 = sample_batch['image 1'] ## maybe should use image_raw
+        img2 = sample_batch['image 2']
+        depth1 = sample_batch['depth 1']
+        depth2 = sample_batch['depth 2']
+        pose1_2 = sample_batch['rela_pose']
+        # img1_raw = sample_batch['image 1 raw']
+        # img2_raw = sample_batch['image 2 raw']
+        # idep1 = sample_batch['idepth 1']
+        # idep2 = sample_batch['idepth 2']
+
+        feature1 = output[0]['feature']
+        feature2 = output[1]['feature']
+
+        inout_flat = {}
+        inout_flat[0] = {}
+        inout_flat[1] = {}
+
         ### flatten depth and feature maps ahead of other operations to make pixel selection easier
         batch_size = depth1.shape[0]
         n_pts_1 = depth1.shape[2]*depth1.shape[3]
@@ -500,82 +516,81 @@ class innerProdLoss(nn.Module):
         img_flat_1 = img1.reshape(batch_size, 3, n_pts_1) # B*C*N1
         img_flat_2 = img2.reshape(batch_size, 3, n_pts_2) # B*C*N2
 
+        inout_flat[0]['depth'] = depth1_flat
+        inout_flat[1]['depth'] = depth2_flat
+        inout_flat[0]['feature'] = fea_flat_1
+        inout_flat[1]['feature'] = fea_flat_2
+        inout_flat[0]['img'] = img_flat_1
+        inout_flat[1]['img'] = img_flat_2
+
         if self.opt.opt_unet.weight_map_mode:
+            feature1_w = output[0]['feature_w']
+            feature2_w = output[1]['feature_w']
             fea_w_flat_1 = feature1_w.reshape(batch_size, 1, n_pts_1)  # B*C*N1
             fea_w_flat_2 = feature2_w.reshape(batch_size, 1, n_pts_2)  # B*C*N2
             # fea_w_flat_1 = self.w_normalize( feature1_w.reshape(batch_size, 1, n_pts_1) ) # B*C*N1
             # fea_w_flat_2 = self.w_normalize( feature2_w.reshape(batch_size, 1, n_pts_2) ) # B*C*N2
             # fea_w_1 = fea_w_flat_1.reshape(batch_size, 1, feature1_w.shape[2], feature1_w.shape[3] )
             # fea_w_2 = fea_w_flat_2.reshape(batch_size, 1, feature2_w.shape[2], feature2_w.shape[3] )
+            inout_flat[0]['feature_w'] = fea_w_flat_1
+            inout_flat[1]['feature_w'] = fea_w_flat_2
 
-        if feature1_norm is not None and feature2_norm is not None:
+        if self.opt.subset_in_loss:
+            feature1_norm = output[0]['feature_norm']
+            feature2_norm = output[1]['feature_norm']
             feature1_norm_flat = feature1_norm.reshape(batch_size, 1, n_pts_1)
             feature2_norm_flat = feature2_norm.reshape(batch_size, 1, n_pts_2)
-        else:
-            feature1_norm_flat = [None]*int(batch_size)
-            feature2_norm_flat = [None]*int(batch_size)
+            inout_flat[0]['feature_norm'] = feature1_norm_flat
+            inout_flat[1]['feature_norm'] = feature2_norm_flat
             
-
         if self.opt.diff_mode:
             self.pose1_2_noise = gen_rand_pose(self.opt.source, self.noise_trans_scale, self.device)
 
-        #################### calculate loss by going over each sample in the batch ##########################
-        final_loss = torch.tensor(0., device=self.device)
-        inner_neg = torch.tensor(0., device=self.device)
-        fea_norm_sum = torch.tensor(0., device=self.device)
-        inner_neg_pred = torch.tensor(0., device=self.device)
+        ########################## calculate loss by going over each sample in the batch ##########################
+        ### Every sample should be processed separately because the selected pixels in each images are not the same.
+        ### However, the calc_loss function is still designed to process a mini-batch for better compatibility. Each
+        ### sample is augmented a dimension to pretend a mini-batch
 
-        mask_feat_norm_1 = [None]*int(batch_size)
-        mask_feat_norm_2 = [None]*int(batch_size)
+        losses = {}
+        losses['final'] = torch.tensor(0., device=self.device)
+        losses['CVO'] = torch.tensor(0., device=self.device)
+        losses['norm'] = torch.tensor(0., device=self.device)
+        losses['CVO_pred'] = torch.tensor(0., device=self.device)
+
+        if self.opt.subset_in_loss:
+            mask_feat_norm_1 = [None]*int(batch_size)
+            mask_feat_norm_2 = [None]*int(batch_size)
 
         for i in range(batch_size):
+            flat_sel = {}
+            flat_sel[0] = self.selected(inout_flat, 0, i) #3*N
+            flat_sel[1] = self.selected(inout_flat, 1, i) #3*N  
             if self.opt.opt_unet.weight_map_mode:
-                xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel, fea_w_flat_1_sel = self.selected(depth1_flat[i], 
-                                                                    fea_flat_1[i], img_flat_1[i], fea_w_flat_1[i]) #3*N
-                xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel, fea_w_flat_2_sel = self.selected(depth2_flat[i], 
-                                                                    fea_flat_2[i], img_flat_2[i], fea_w_flat_2[i]) #3*N   
-                fea_w_flat_1_sel = self.w_normalize(fea_w_flat_1_sel)
-                fea_w_flat_2_sel = self.w_normalize(fea_w_flat_2_sel)
+                flat_sel[0]['feature_w'] = self.w_normalize(flat_sel[0]['feature_w'])
+                flat_sel[1]['feature_w'] = self.w_normalize(flat_sel[1]['feature_w'])
+
+            if self.opt.subset_in_loss:
+                mask_feat_norm_1[i] = flat_sel[0]['mask_feat_norm']
+                mask_feat_norm_2[i] = flat_sel[1]['mask_feat_norm']
+
+            if not self.opt.opt_unet.pose_predict_mode:
+                loss_single = self.calc_loss(flat_sel, pose1_2)
+            else:
+                pose1_2_pred = output['pose_pred'][i]
+                loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
+                losses['CVO_pred'] += loss_single['CVO_pred']
                 
-            else:
-                xyz1, dep_flat_1_sel, fea_flat_1_sel, img_flat_1_sel, mask_feat_norm_1[i] = self.selected(depth1_flat[i], fea_flat_1[i], img_flat_1[i], fea_norm_flat_sample=feature1_norm_flat[i]) #3*N
-                xyz2, dep_flat_2_sel, fea_flat_2_sel, img_flat_2_sel, mask_feat_norm_2[i] = self.selected(depth2_flat[i], fea_flat_2[i], img_flat_2[i], fea_norm_flat_sample=feature2_norm_flat[i]) #3*N 
-                fea_w_flat_1_sel = None
-                fea_w_flat_2_sel = None
+            losses['final'] +=  loss_single['final']
+            losses['CVO'] +=  loss_single['CVO']
+            losses['norm'] +=  loss_single['norm']
 
-            if pose1_2_pred is None:
-                final_loss_single, inner_neg_single, fea_norm_sum_single = \
-                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel,
-                        feature1_w=fea_w_flat_1_sel, feature2_w=fea_w_flat_2_sel)
-            else:
-                final_loss_single, inner_neg_single, fea_norm_sum_single, inner_neg_pred_single = \
-                    self.calc_loss(xyz1, xyz2, pose1_2[i], fea_flat_1_sel, fea_flat_2_sel, img_flat_1_sel, img_flat_2_sel, 
-                        feature1_w=fea_w_flat_1_sel, feature2_w=fea_w_flat_2_sel, pose1_2_pred=pose1_2_pred[i])
-
-                inner_neg_pred = inner_neg_pred + inner_neg_pred_single
-
-            final_loss = final_loss + final_loss_single
-            inner_neg = inner_neg + inner_neg_single
-            fea_norm_sum = fea_norm_sum + fea_norm_sum_single
-
-        if feature1_norm is not None and feature2_norm is not None:
+        if self.opt.subset_in_loss:
             mask_feat_norm_1_stack = torch.stack(mask_feat_norm_1, dim=0).reshape(batch_size, 1, depth1.shape[2], depth1.shape[3])
             mask_feat_norm_2_stack = torch.stack(mask_feat_norm_2, dim=0).reshape(batch_size, 1, depth1.shape[2], depth1.shape[3])
+            output[0]['norm_mask'] = mask_feat_norm_1_stack
+            output[1]['norm_mask'] = mask_feat_norm_2_stack
             
-
-        if pose1_2_pred is None:
-            if self.opt.opt_unet.weight_map_mode:
-                return final_loss, inner_neg, fea_norm_sum, feature1_w, feature2_w
-                # return final_loss, inner_neg, fea_w_1, fea_w_2
-            elif feature1_norm is not None and feature2_norm is not None:
-                return final_loss, inner_neg, fea_norm_sum, mask_feat_norm_1_stack, mask_feat_norm_2_stack
-            else:
-                return final_loss, inner_neg, fea_norm_sum
-                # return final_loss, inner_neg
-                
-        else:
-            return final_loss, inner_neg, fea_norm_sum, inner_neg_pred
-            # return final_loss, inner_neg, inner_neg_pred
+        return losses, output
 
             
         #############################################
@@ -584,39 +599,46 @@ class innerProdLoss(nn.Module):
         # return self.calc_loss(xyz1, xyz2, pose1_2, fea_flat_1, fea_flat_2, img_flat_1, img_flat_2, pose1_2_pred)
 
 
-    def selected(self, depth_flat_sample, fea_flat_sample, img_flat_sample, fea_w_flat_sample=None, fea_norm_flat_sample=None):
+    def selected(self, inout_flat, i, j):
+        ### i is 0 or 1 (camera 0 or 1), j is index in the mini-batch
+    # def selected(self, depth_flat_sample, fea_flat_sample, img_flat_sample, fea_w_flat_sample=None, fea_norm_flat_sample=None):
         '''
         Input is 1*N or 3*N
         Output 1*C*N (keep the batch dimension)
         '''
+        depth_flat_sample = inout_flat[i]['depth'][j]
+        fea_flat_sample = inout_flat[i]['feature'][j]
+        img_flat_sample = inout_flat[i]['img'][j]
 
-        # feat_flat_svded = feat_svd_flat_single(fea_flat_sample)
-        # feat_norm = torch.norm(feat_flat_svded, dim=0)
-        # mask_feat_norm = feat_norm >= 0.2 * torch.max(feat_norm)
-        # print(torch.sum(mask_feat_norm.to(torch.float32)))
+        flat_sel = {}
 
+        ############################# create mask ############################################
         # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.opt.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.opt.height - 5)
         mask = (depth_flat_sample.squeeze() > 0)
         
-        if fea_norm_flat_sample is not None:
+        if self.opt.subset_in_loss:
+            fea_norm_flat_sample = inout_flat[i]['feature_norm'][j]
             mask_feat_norm = fea_norm_flat_sample.squeeze() >= self.min_norm_thresh
             mask = mask & mask_feat_norm
-            mask_feat_norm = mask_feat_norm.unsqueeze(0)
-        else:
-            mask_feat_norm = None
+            flat_sel['mask_feat_norm'] = mask_feat_norm.unsqueeze(0)
+
+         ##############################################################################
+
 
         depth_flat_sample_selected = depth_flat_sample[:,mask]
         fea_flat_sample_selected = fea_flat_sample[:,mask]
         img_flat_sample_selected = img_flat_sample[:,mask]
-        if fea_w_flat_sample is not None:
-            fea_w_flat_sample_selected = fea_w_flat_sample[:,mask]
+        flat_sel['depth'] = depth_flat_sample_selected.unsqueeze(0)
+        flat_sel['feature'] = fea_flat_sample_selected.unsqueeze(0)
+        flat_sel['img'] = img_flat_sample_selected.unsqueeze(0)
 
         yz1_grid_selected = self.yz1_grid[:,mask]
         xyz_selected = yz1_grid_selected * depth_flat_sample_selected
+        flat_sel['xyz'] = xyz_selected.unsqueeze(0)
 
-        if fea_w_flat_sample is not None:
-            return xyz_selected.unsqueeze(0), depth_flat_sample_selected.unsqueeze(0), \
-                fea_flat_sample_selected.unsqueeze(0), img_flat_sample_selected.unsqueeze(0), fea_w_flat_sample_selected.unsqueeze(0)
-        else:
-            return xyz_selected.unsqueeze(0), depth_flat_sample_selected.unsqueeze(0), \
-                fea_flat_sample_selected.unsqueeze(0), img_flat_sample_selected.unsqueeze(0), mask_feat_norm
+        if self.opt.opt_unet.weight_map_mode:
+            fea_w_flat_sample = inout_flat[i]['feature_w'][j]
+            fea_w_flat_sample_selected = fea_w_flat_sample[:,mask]
+            flat_sel['feature_w'] = fea_w_flat_sample_selected.unsqueeze(0)
+
+        return flat_sel

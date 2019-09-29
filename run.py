@@ -141,27 +141,34 @@ def main():
 
             model_overall.set_norm_level(i_batch)
 
+            losses, output = model_overall(sample_batch)
+            
+            loss = losses['final']
+            innerp_loss = losses['CVO']
+            feat_norm = losses['norm']
+
             if unet_options.pose_predict_mode:
-                feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
-                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+                innerp_loss_pred = losses['CVO_pred']
+                euler_pred = output['euler_pred']
+
+            if unet_options.weight_map_mode:
+                feat_w_1 = output[0]['feature_w']
+                feat_w_2 = output[1]['feature_w']
+            
+            if loss_options.pca_in_loss or loss_options.subset_in_loss:
+                feature1_norm = output[0]['feature_norm']
+                feature2_norm = output[1]['feature_norm']
+                feature1 = output[0]['feature_chnl3']
+                feature2 = output[1]['feature_chnl3']
+                if loss_options.subset_in_loss:
+                    mask_1 = output[0]['norm_mask']
+                    mask_2 = output[1]['norm_mask']
             else:
-                if unet_options.weight_map_mode:
-                    feature1_full, feature2_full, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = \
-                        model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
-                else:
-                    if loss_options.pca_in_loss or loss_options.subset_in_loss:
-                        feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
-                            model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw )
-                    else:
-                        feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
-                            model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
-                    
+                feature1_full = output[0]['feature']
+                feature2_full = output[1]['feature']
 
-            if iter_overall == 0:
-                writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
-
-            # feature1 = feature1_full[:,0:3,:,:]
-            # feature2 = feature2_full[:,0:3,:,:]
+            # if iter_overall == 0:
+            #     writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
 
             # feature1_full: original feature
             # feature1: first 3 channels after svd
@@ -350,20 +357,9 @@ def main():
 
                 model_overall.eval()
                 with torch.no_grad():
-                    if unet_options.pose_predict_mode:
-                        feature1_full, feature2_full, loss, innerp_loss, feat_norm, innerp_loss_pred, euler_pred = \
-                            model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
-                    else:
-                        if unet_options.weight_map_mode:
-                            feature1_full, feature2_full, loss, innerp_loss, feat_norm, feat_w_1, feat_w_2 = \
-                                model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
-                        else:
-                            if loss_options.pca_in_loss or loss_options.subset_in_loss:
-                                feature1_norm, feature2_norm, loss, innerp_loss, feat_norm, feature1, feature2, mask_1, mask_2 = \
-                                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2, img1_raw, img2_raw  )
-                            else:
-                                feature1_full, feature2_full, loss, innerp_loss, feat_norm = \
-                                    model_overall(img1, img2, dep1, dep2, idep1, idep2, pose1_2 )
+
+                    losses, output = model_overall(sample_batch)                    
+                    loss = losses['final']
                             
                 model_overall.train()
                 

@@ -214,7 +214,7 @@ def load_from_carla(folders):
         # break
     return pair_seq
 
-def load_from_TUM(folders):
+def load_from_TUM(folders, simple_mode=False):
     folders = sorted(folders)
 
     pair_seq = []
@@ -349,20 +349,43 @@ def load_from_TUM(folders):
         for i in range(len(paths_dep)-1):
             frame_num = i
 
-            for j in range(1, min(10, len(paths_dep)-i), 2 ):
-                frame_next = i+j
+            if simple_mode:
+                for j in range(1,2):
+                    frame_next = i+j
 
-                pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-                pose_euler_relative = euler_t_from_pose(pose_relative)
-                pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
-                            'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
-                pair_seq.append(pair_dict)
+                    pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
+                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                    pair_seq.append(pair_dict)
 
-                pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
-                pose_euler_relative = euler_t_from_pose(pose_relative)
-                pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
-                            'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
-                pair_seq.append(pair_dict)
+            else:
+                for j in range(1, min(10, len(paths_dep)-i), 2 ):
+                    frame_next = i+j
+
+                    pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
+                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                    pair_seq.append(pair_dict)
+
+                    pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
+                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                    pair_seq.append(pair_dict)
+
+        if simple_mode:
+            frame_num = len(paths_dep)-1
+            i = frame_num
+            j = -1
+            frame_next = i+j
+
+            pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+            pose_euler_relative = euler_t_from_pose(pose_relative)
+            pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
+                        'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+            pair_seq.append(pair_dict)
 
         print('loaded')
         # break
@@ -401,7 +424,7 @@ class ToTensor(object):
                     'idepth 1': torch.from_numpy(idepth_1),
                     'idepth 2': torch.from_numpy(idepth_2),
                     'rela_pose': torch.from_numpy(sample['rela_pose']),
-                    'rela_euler': torch.from_numpy(sample['rela_euler'])}
+                    'rela_euler': torch.from_numpy(sample['rela_euler']), 'imgname 1': sample['imgname 1']}
         else:
             return {'image 1': torch.from_numpy(image_1).to(self.device, dtype=torch.float),
                     'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
@@ -412,7 +435,7 @@ class ToTensor(object):
                     'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
                     'idepth 2': torch.from_numpy(idepth_2).to(self.device, dtype=torch.float),
                     'rela_pose': torch.from_numpy(sample['rela_pose']).to(self.device, dtype=torch.float),
-                    'rela_euler': torch.from_numpy(sample['rela_euler']).to(self.device, dtype=torch.float)}
+                    'rela_euler': torch.from_numpy(sample['rela_euler']).to(self.device, dtype=torch.float), 'imgname 1': sample['imgname 1']}
 
 class Rescale(object):
     """Rescale the image in a sample to a given size.
@@ -465,7 +488,7 @@ class Rescale(object):
                     'idepth 1': idepth_1,
                     'idepth 2': idepth_2,
                     'rela_pose': sample['rela_pose'], 
-                    'rela_euler': sample['rela_euler']}
+                    'rela_euler': sample['rela_euler'], 'imgname 1': sample['imgname 1']}
         else:
             return {'image 1': image_1,
                     'image 2': image_2,
@@ -476,7 +499,7 @@ class Rescale(object):
                     'idepth 1': idepth_1,
                     'idepth 2': idepth_2,
                     'rela_pose': sample['rela_pose'], 
-                    'rela_euler': sample['rela_euler']}
+                    'rela_euler': sample['rela_euler'], 'imgname 1': sample['imgname 1']}
         
 
 
@@ -484,14 +507,19 @@ class Rescale(object):
 class ImgPoseDataset(Dataset):
     """CARLA images, depth and pose dataset"""
 
-    def __init__(self, root_dir='/mnt/storage/minghanz_data/CARLA(with_pose)/_out', transform=None):
+    def __init__(self, root_dir='/mnt/storage/minghanz_data/CARLA(with_pose)/_out', transform=None, folders=None):
         self.root_dir = root_dir
         if 'CARLA' in root_dir:
             self.folders = glob.glob(root_dir+'/episode*')
             self.pair_seq = load_from_carla(folders=self.folders)
         elif 'TUM' in root_dir:
-            self.folders = glob.glob(root_dir+'/rgbd*')
-            self.pair_seq = load_from_TUM(folders=self.folders)
+            if folders == None:
+                self.folders = glob.glob(root_dir+'/rgbd*')
+                self.simple = False
+            else:
+                self.folders = [os.path.join(root_dir, folder) for folder in folders]
+                self.simple = True
+            self.pair_seq = load_from_TUM(folders=self.folders, simple_mode=self.simple)
         
         self.len_pairs = len(self.pair_seq)
 
@@ -515,9 +543,11 @@ class ImgPoseDataset(Dataset):
         rela_pose = self.pair_seq[idx]['rela_pose']
         rela_euler = self.pair_seq[idx]['rela_euler']
 
+        img_name1 = self.pair_seq[idx]['image_path 1'].split('/')[-1][:-4]
+
         # sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
         sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 
-                    'rela_pose': rela_pose, 'rela_euler': rela_euler}
+                    'rela_pose': rela_pose, 'rela_euler': rela_euler, 'imgname 1': img_name1}
     
         if self.transform:
             sample = self.transform(sample)

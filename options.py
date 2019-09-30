@@ -15,6 +15,8 @@ class UnetOptions:
 
         self.weight_map_mode = False
 
+        self.run_eval = True
+
     def setto(self):
         self.in_channels=3
         self.n_classes=16
@@ -28,10 +30,10 @@ class LossOptions:
         self.diff_mode = False
         self.kernalize = True
         
-        self.color_in_cost = True
+        self.color_in_cost = False
         
-        self.width = 128 # (72*96) (96, 128) (240, 320)
-        self.height = 96
+        self.width = 640 # (72*96) [[96, 128]] (240, 320)
+        self.height = 480
         self.source='TUM'
         if self.source=='CARLA':
             self.root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
@@ -44,5 +46,16 @@ class LossOptions:
 
         self.pca_in_loss = False
         self.subset_in_loss = True
+
+        if self.width > 128:
+            self.no_inner_prod = True
+            self.visualize_pca_chnl = False
+        else:
+            self.no_inner_prod = False
+            self.visualize_pca_chnl = True
         
         self.opt_unet = unetoptions
+
+        self.folders = None
+        if self.opt_unet.run_eval:
+            self.folders = ['rgbd_dataset_freiburg1_desk']

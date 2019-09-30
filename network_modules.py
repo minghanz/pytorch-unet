@@ -14,40 +14,30 @@ from geometry import kern_mat, gramian, gen_3D, gen_3D_flat
 # from torchvision import models
 import segmentation_models_pytorch as smp
 
-# from run import feat_svd
+# from run import feat_pca
 
-def feat_svd(feature):
+def feat_pca(feature):
     # input feature is b*c*h*w, need to change to b*c*n
     b = feature.shape[0]
     c = feature.shape[1]
     h = feature.shape[2]
     w = feature.shape[3]
     feat_flat = feature.reshape(b, c, h*w)
-    
-    # feat_mean = torch.mean(feature, dim=(2,3), keepdim=False)
-    # feat_flat = feat_flat - feat_mean.unsqueeze(2).expand_as(feat_flat)
-    # print(feat_flat.device)
-    # print(feat_flat.shape)
 
-    feat_new = feat_svd_flat(feat_flat)
+    feat_new = feat_pca_flat(feat_flat)
 
     feat_img = feat_new.reshape(b,c,h,w)
     feat_img_3 = feat_img[:,0:3,:,:]
     return feat_img_3, feat_img
 
-def feat_svd_flat(feat_flat):
-    feat_mean = feat_flat.mean(dim=2, keepdim=True)
-    feat_flat = feat_flat - feat_mean.expand_as(feat_flat)
+def feat_pca_flat(feat_flat):
     u, s, v = torch.svd(feat_flat)
     # feat_new = torch.bmm( u[:,:,0:3].transpose(1,2), feat_flat) # b*3*n
     # feat_img = feat_new.reshape(b,3,h,w)
     feat_new = torch.bmm( u.transpose(1,2), feat_flat) # b*3*n
-
     return feat_new
 
-def feat_svd_flat_single(feat_flat):
-    feat_mean = feat_flat.mean(dim=1, keepdim=True)
-    feat_flat = feat_flat - feat_mean.expand_as(feat_flat)
+def feat_pca_flat_single(feat_flat):
     u, s, v = torch.svd(feat_flat)
     feat_new = torch.mm( u.transpose(0,1), feat_flat) # b*3*n
     return feat_new
@@ -123,28 +113,37 @@ class UNetInnerProd(nn.Module):
         # print(torch.cuda.memory_allocated(device=self.device))
 
         ## process feature to SVD
-        feature1_norm = None
-        feature2_norm = None
-        if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
-            feature1_3, feature1_svd = feat_svd(feature1)
-            feature2_3, feature2_svd = feat_svd(feature2)
-            feature1_norm = torch.norm(feature1_svd, dim=1)
-            feature2_norm = torch.norm(feature2_svd, dim=1)
-            feature1_norm = feature1_norm / torch.max(feature1_norm)
-            feature2_norm = feature2_norm / torch.max(feature2_norm)
-            if self.opt_loss.pca_in_loss:
-                feature1 = feature1_svd
-                feature2 = feature2_svd
+        # if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
+        feature1_centered = feature1 - torch.mean(feature1, dim=(2,3), keepdim=True)
+        feature2_centered = feature1 - torch.mean(feature2, dim=(2,3), keepdim=True)
 
-            output[0]['feature_svd'] = feature1_svd
-            output[1]['feature_svd'] = feature2_svd
+        feature1_norm = torch.norm(feature1_centered, dim=1)
+        feature2_norm = torch.norm(feature2_centered, dim=1)
+        feature1_norm = feature1_norm / torch.max(feature1_norm)
+        feature2_norm = feature2_norm / torch.max(feature2_norm)
+        output[0]['feature_norm'] = feature1_norm
+        output[1]['feature_norm'] = feature2_norm
+
+        if self.opt_loss.pca_in_loss or self.opt_loss.visualize_pca_chnl:
+            feature1_3, feature1_pca = feat_pca(feature1_centered)
+            feature2_3, feature2_pca = feat_pca(feature2_centered)
+            output[0]['feature_pca'] = feature1_pca
+            output[1]['feature_pca'] = feature2_pca
             output[0]['feature_chnl3'] = feature1_3
             output[1]['feature_chnl3'] = feature2_3
-            output[0]['feature_norm'] = feature1_norm
-            output[1]['feature_norm'] = feature2_norm
+            # feature1_norm_pca = torch.norm(feature1_pca, dim=1)
+            # feature2_norm_pca = torch.norm(feature2_pca, dim=1)
+            # feature1_norm_pca = feature1_norm_pca / torch.max(feature1_norm_pca)
+            # feature2_norm_pca = feature2_norm_pca / torch.max(feature2_norm_pca)
+            # output[0]['feature_norm_pca'] = feature1_norm_pca
+            # output[1]['feature_norm_pca'] = feature2_norm_pca
+
+            if self.opt_loss.pca_in_loss:
+                feature1 = feature1_pca
+                feature2 = feature2_pca
+
         output[0]['feature'] = feature1
         output[1]['feature'] = feature2 
-        
 
         dep1.requires_grad = False
         dep2.requires_grad = False
@@ -573,16 +572,17 @@ class innerProdLoss(nn.Module):
                 mask_feat_norm_1[i] = flat_sel[0]['mask_feat_norm']
                 mask_feat_norm_2[i] = flat_sel[1]['mask_feat_norm']
 
-            if not self.opt.opt_unet.pose_predict_mode:
-                loss_single = self.calc_loss(flat_sel, pose1_2)
-            else:
-                pose1_2_pred = output['pose_pred'][i]
-                loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
-                losses['CVO_pred'] += loss_single['CVO_pred']
-                
-            losses['final'] +=  loss_single['final']
-            losses['CVO'] +=  loss_single['CVO']
-            losses['norm'] +=  loss_single['norm']
+            if not self.opt.no_inner_prod:
+                if not self.opt.opt_unet.pose_predict_mode:
+                    loss_single = self.calc_loss(flat_sel, pose1_2)
+                else:
+                    pose1_2_pred = output['pose_pred'][i]
+                    loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
+                    losses['CVO_pred'] += loss_single['CVO_pred']
+                    
+                losses['final'] +=  loss_single['final']
+                losses['CVO'] +=  loss_single['CVO']
+                losses['norm'] +=  loss_single['norm']
 
         if self.opt.subset_in_loss:
             mask_feat_norm_1_stack = torch.stack(mask_feat_norm_1, dim=0).reshape(batch_size, 1, depth1.shape[2], depth1.shape[3])

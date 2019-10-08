@@ -137,6 +137,14 @@ def main():
         model_overall.model_UNet.eval()
         model_overall.model_loss.eval()
 
+    if unet_options.continue_train: 
+        save_model_folder = os.path.join('saved_models', 'wo_color_Mon Sep 30 15:21:22 2019')
+        checkpoint = torch.load(os.path.join(save_model_folder, 'epoch00_3000.pth') )
+        model_overall.model_UNet.load_state_dict(checkpoint['model_state_dict'])
+        model_overall.model_loss.load_state_dict(checkpoint['loss_model_state_dict'])
+        optim.load_state_dict(checkpoint['optimizer_state_dict'])
+
+
     epochs = 1
 
     writer = SummaryWriter()
@@ -146,21 +154,22 @@ def main():
     lr_change_time = 0
     start_time = time.time()
     ctime = time.ctime()
-    if loss_options.color_in_cost:
-        mode_folder = 'with_color_'
-    else:
-        mode_folder = 'wo_color_'
-    if unet_options.run_eval:
-        output_folder = os.path.join('feature_output', mode_folder + ctime )
-        os.mkdir(output_folder)
-    else:
-        save_model_folder = os.path.join('saved_models', mode_folder + ctime )
-        os.mkdir(save_model_folder)
+    if not unet_options.continue_train: 
+        if loss_options.color_in_cost:
+            mode_folder = 'with_color_'
+        else:
+            mode_folder = 'wo_color_'
+        if unet_options.run_eval:
+            output_folder = os.path.join('feature_output', mode_folder + ctime )
+            os.mkdir(output_folder)
+        else:
+            save_model_folder = os.path.join('saved_models', mode_folder + ctime )
+            os.mkdir(save_model_folder)
     overall_time = 0
     for i_epoch in range(epochs):
         print('entering epoch', i_epoch) 
         for i_batch, sample_batch in enumerate(data_loader_train):
-            if i_batch > 10000:
+            if i_batch > 12000:
                 break
             img1 = sample_batch['image 1']
             img2 = sample_batch['image 2']
@@ -174,6 +183,19 @@ def main():
             pose1_2 = sample_batch['rela_pose']
             euler1_2 = sample_batch['rela_euler']
             
+            if unet_options.run_eval:
+                visualize_mode = True
+            else:
+                visualize_mode = i_batch % 100 == 0
+            eval_mode = i_batch % 100 == 0
+
+            if visualize_mode and loss_options.width <= 128:
+                model_overall.opt_loss.visualize_pca_chnl = True
+                model_overall.model_loss.opt.visualize_pca_chnl = True
+            else:
+                model_overall.opt_loss.visualize_pca_chnl = False
+                model_overall.model_loss.opt.visualize_pca_chnl = False
+
 
             model_overall.set_norm_level(i_batch)
 
@@ -234,12 +256,6 @@ def main():
 
                     print(iter_overall, 'imgname', i, ':', imgname[i])
 
-            if unet_options.run_eval:
-                visualize_mode = True
-            else:
-                visualize_mode = i_batch % 50 == 0
-
-            eval_mode = i_batch % 50 == 0
             if visualize_mode:
                 grid1 = torchvision.utils.make_grid(img1_raw)
                 grid2 = torchvision.utils.make_grid(img2_raw)
@@ -358,19 +374,20 @@ def main():
                     print('pred_euler:')
                     print(euler_pred)
 
-            # ### adjust learning rate
-            # if lr_change_time==0 and (i_batch ==2000 or loss < -1e7):
-            #     lr_change_time += 1
-            #     lr = lr * 0.1
-            #     for g in optim.param_groups:
-            #         g['lr'] = g['lr'] * 0.1
-            #     print('learning rate 0.1x at', i_batch, ', now:', lr)
-            # if lr_change_time==1 and (i_batch ==4000 or loss < -1e10):
-            #     lr_change_time += 1
-            #     lr = lr * 0.1
-            #     for g in optim.param_groups:
-            #         g['lr'] = g['lr'] * 0.1
-            #     print('learning rate 0.1x at', i_batch, ', now:', lr)
+            ### adjust learning rate
+            if (not unet_options.run_eval) & (not loss_options.subset_in_loss) :
+                if lr_change_time==0 and (i_batch ==6000 or loss < -1e7):
+                    lr_change_time += 1
+                    lr = lr * 0.1
+                    for g in optim.param_groups:
+                        g['lr'] = g['lr'] * 0.1
+                    print('learning rate 0.1x at', i_batch, ', now:', lr)
+                # if lr_change_time==1 and (i_batch ==6000 or loss < -1e10):
+                #     lr_change_time += 1
+                #     lr = lr * 0.1
+                #     for g in optim.param_groups:
+                #         g['lr'] = g['lr'] * 0.1
+                #     print('learning rate 0.1x at', i_batch, ', now:', lr)
 
 
             ### validation
@@ -401,7 +418,10 @@ def main():
 
 
                 if iter_overall % 1000 == 0:
-                    model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
+                    if unet_options.continue_train:
+                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}_continued.pth'.format(i_epoch, iter_overall ) )
+                    else:
+                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
                     torch.save({
                         'epoch': i_epoch,
                         'model_state_dict': model_overall.model_UNet.state_dict(),

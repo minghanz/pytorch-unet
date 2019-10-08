@@ -3,6 +3,8 @@ import torch
 # import sub_cuda
 import sub_norm_cuda
 from torch.autograd import Function
+import torch.nn.functional as F
+import torch.nn as nn
 
 class SubNormFunction(Function):
     @staticmethod
@@ -85,9 +87,8 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         
         # pcl_diff = SubFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda'))
         # pcl_diff_exp = torch.exp(-torch.norm(pcl_diff, dim=1) * dist_coef  )
-
+        
         pcl_diff = SubNormFunction.apply(pcl_1.contiguous(), pcl_2.contiguous())
-        # print(pcl_diff.device)
         assert not torch.isnan(pcl_diff).any()
         assert not torch.isinf(pcl_diff).any()
         # pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
@@ -99,7 +100,7 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
 
     return pcl_diff_exp
 
-def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, norm_dim):
+def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, norm_dim, dist_coef=1e0):
     """
     RBF inner product or normal inner product, for features.
     inputs are B*C*N tensors, C corresponding to feature dimension (default 3)
@@ -141,7 +142,7 @@ def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, norm_dim):
     if not kernalize:
         gramian = torch.matmul(fea_flat_1.transpose(1,2), fea_flat_2) 
     else:
-        gramian = kern_mat(fea_flat_1, fea_flat_2, dist_coef=1e0) # , dist_coef=1e1
+        gramian = kern_mat(fea_flat_1, fea_flat_2, dist_coef=dist_coef) # , dist_coef=1e1
 
     return gramian, fea_norm_sum_1 + fea_norm_sum_2
 
@@ -181,4 +182,140 @@ def gen_3D_flat(yz1_grid, depth1, depth2):
 
     return xyz_1, xyz_2
 
+def fill_partial_depth(depth, value=100):
+    dummy_depth = torch.ones_like(depth) * value
+    depth = torch.where(depth > 0, depth, dummy_depth)
+    return depth
 
+def reproject_image(host_xyz_on_guest, K, guest_image, zdim=2):
+    """
+    Reconstruct host frame using host depth, transformation T and guest image. 
+    First, reproject host image coord grid onto guest image frame using host_depth and T
+    Second, reconstruct host frame by interpolation on guest image
+    host_xyz_on_guest: B*3*N
+    K: 3*3
+    zdim: 2 for TUM, 0 for CARLA
+    guest_image: B*C*H*W
+    warped_image: B*C*H*W
+    """
+    width = guest_image.shape[3]
+    height = guest_image.shape[2]
+
+    ## turn xyz to xy1 B*3*N (3: x, y, z)
+    host_xy_on_guest = host_xyz_on_guest / host_xyz_on_guest[:, zdim:zdim+1, :].expand_as(host_xyz_on_guest)
+    ## turn xy1 to uv1 B*2*N (2: u, v)
+    host_uv_on_guest = torch.matmul(K, host_xy_on_guest)[:, :2, :]
+    ## turn to B*H*W*2 (2: u, v)
+    host_uv_square = host_uv_on_guest.reshape( host_uv_on_guest.shape[0], 2, height, width ).permute(0, 2, 3, 1)
+    ## normalize to [-1, 1]
+    host_uv_square[..., 0] /= (width-1)
+    host_uv_square[..., 1] /= (height-1)
+    host_uv_square = (host_uv_square - 0.5) * 2
+    ## reconstruct host image by sampling on guest image
+    warped_image = F.grid_sample( guest_image, host_uv_square, padding_mode="border")
+
+    return warped_image
+
+class SSIM(nn.Module):
+    """Layer to compute the SSIM loss between a pair of images
+    """
+    def __init__(self):
+        super(SSIM, self).__init__()
+        self.mu_x_pool   = nn.AvgPool2d(3, 1)
+        self.mu_y_pool   = nn.AvgPool2d(3, 1)
+        self.sig_x_pool  = nn.AvgPool2d(3, 1)
+        self.sig_y_pool  = nn.AvgPool2d(3, 1)
+        self.sig_xy_pool = nn.AvgPool2d(3, 1)
+
+        self.refl = nn.ReflectionPad2d(1)
+
+        self.C1 = 0.01 ** 2
+        self.C2 = 0.03 ** 2
+
+    def forward(self, x, y):
+        x = self.refl(x)
+        y = self.refl(y)
+
+        mu_x = self.mu_x_pool(x)
+        mu_y = self.mu_y_pool(y)
+
+        sigma_x  = self.sig_x_pool(x ** 2) - mu_x ** 2
+        sigma_y  = self.sig_y_pool(y ** 2) - mu_y ** 2
+        sigma_xy = self.sig_xy_pool(x * y) - mu_x * mu_y
+
+        SSIM_n = (2 * mu_x * mu_y + self.C1) * (2 * sigma_xy + self.C2)
+        SSIM_d = (mu_x ** 2 + mu_y ** 2 + self.C1) * (sigma_x + sigma_y + self.C2)
+
+        return torch.clamp((1 - SSIM_n / SSIM_d) / 2, 0, 1)
+
+def rgb_to_hsv(image, flat=False):
+    """Convert an RGB image to HSV.
+
+    Args:
+        input (torch.Tensor): RGB Image to be converted to HSV.
+        flat: True if input B*C*N, False if input B*C*H*W
+
+    Returns:
+        torch.Tensor: HSV version of the image.
+    """
+
+    if not torch.is_tensor(image):
+        raise TypeError("Input type is not a torch.Tensor. Got {}".format(
+            type(image)))
+
+    if not flat:
+        if len(image.shape) < 3 or image.shape[-3] != 3:
+            raise ValueError("Input size must have a shape of (*, 3, H, W) given flat=False. Got {}"
+                            .format(image.shape))
+    else:
+        if len(image.shape) < 2 or image.shape[-2] != 3:
+            raise ValueError("Input size must have a shape of (*, 3, N) given flat=True. Got {}"
+                            .format(image.shape))
+
+    if not flat:
+        r: torch.Tensor = image[..., 0, :, :]
+        g: torch.Tensor = image[..., 1, :, :]
+        b: torch.Tensor = image[..., 2, :, :]
+
+        maxc: torch.Tensor = image.max(-3)[0]
+        minc: torch.Tensor = image.min(-3)[0]
+    else:
+
+        r: torch.Tensor = image[..., 0, :]
+        g: torch.Tensor = image[..., 1, :]
+        b: torch.Tensor = image[..., 2, :]
+
+        maxc: torch.Tensor = image.max(-2)[0]
+        minc: torch.Tensor = image.min(-2)[0]
+
+    v: torch.Tensor = maxc  # brightness
+    
+    # ZMH: avoid division by zero
+    v = torch.where(
+        v == 0, torch.ones_like(v)*1e-3, v)
+
+    deltac: torch.Tensor = maxc - minc
+    s: torch.Tensor = deltac / v  # saturation
+
+    # avoid division by zero
+    deltac: torch.Tensor = torch.where(
+        deltac == 0, torch.ones_like(deltac), deltac)
+
+    rc: torch.Tensor = (maxc - r) / deltac
+    gc: torch.Tensor = (maxc - g) / deltac
+    bc: torch.Tensor = (maxc - b) / deltac
+
+    maxg: torch.Tensor = g == maxc
+    maxr: torch.Tensor = r == maxc
+
+    h: torch.Tensor = 4.0 + gc - rc
+    h[maxg]: torch.Tensor = 2.0 + rc[maxg] - bc[maxg]
+    h[maxr]: torch.Tensor = bc[maxr] - gc[maxr]
+    h[minc == maxc]: torch.Tensor = 0.0
+
+    h: torch.Tensor = (h / 6.0) % 1.0
+
+    if not flat:
+        return torch.stack([h, s, v], dim=-3)
+    else:
+        return torch.stack([h, s, v], dim=-2)

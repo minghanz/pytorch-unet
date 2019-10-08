@@ -12,6 +12,60 @@ import glob
 import os
 import math
 
+def skewmat_from_w(w):
+    '''
+    w is 1-dim torch tensor of length 3
+    http://ethaneade.com/lie.pdf
+    '''
+    zero = torch.tensor(0., dtype=w.dtype, device=w.device)
+    skew = torch.stack([
+        torch.stack([zero, -w[2], w[1]]), 
+        torch.stack([w[2], zero, -w[0]]), 
+        torch.stack([-w[1], w[0], zero])
+    ])
+    return skew
+
+def pose_RtT_from_se3_tensor(w, v, inverse=False):
+    b = w.shape[0]
+    R = [None]*b
+    t = [None]*b
+    T = [None]*b
+    for i in range(b):
+        R[i], t[i], T[i] = pose_RtT_from_se3_tensor_single(w[i], v[i])
+
+    R = torch.stack(R, dim=0)
+    t = torch.stack(t, dim=0)
+    T = torch.stack(T, dim=0)
+    return R, t, T
+    
+def pose_RtT_from_se3_tensor_single(w, v, inverse=False):
+    '''
+    w and v are both 1-dim torch tensor of length 3
+    http://ethaneade.com/lie.pdf
+    '''
+    skew = skewmat_from_w(w)
+    theta = torch.norm(w)
+    A = torch.sin(theta)/theta
+    B = ( 1-torch.cos(theta) ) / (theta * theta)
+    C = (1 - A) / (theta * theta)
+
+    I = torch.eye(3, dtype=torch.float, device=w.device)
+    
+    R = I + A * skew + B * torch.mm(skew, skew)
+    V = I + B * skew + C * torch.mm(skew, skew)
+    t = torch.mm( V, v.unsqueeze(1) )
+
+    if inverse:
+        R = R.transpose(0, 1)
+        t = - torch.mm(R, t)
+
+    T = torch.cat([
+        torch.cat([R, t], dim=1), 
+        torch.tensor([[0, 0, 0, 1]], dtype=torch.float, device=w.device)
+    ], dim=0)
+    
+    return R, t, T
+
 def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     """
     This function generates 4*4 pose matrix in right-handed coordinate.
@@ -360,7 +414,7 @@ def load_from_TUM(folders, simple_mode=False):
                     pair_seq.append(pair_dict)
 
             else:
-                for j in range(1, min(10, len(paths_dep)-i), 2 ):
+                for j in range(1, min(2, len(paths_dep)-i) ):
                     frame_next = i+j
 
                     pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )

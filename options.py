@@ -15,7 +15,8 @@ class UnetOptions:
 
         self.weight_map_mode = False
 
-        self.run_eval = True
+        self.run_eval = False
+        self.continue_train = False
 
     def setto(self):
         self.in_channels=3
@@ -32,8 +33,8 @@ class LossOptions:
         
         self.color_in_cost = False
         
-        self.width = 640 # (72*96) [[96, 128]] (240, 320)
-        self.height = 480
+        self.width = 128 # (72*96) [[96, 128]] (240, 320)
+        self.height = 96
         self.source='TUM'
         if self.source=='CARLA':
             self.root_dir = '/mnt/storage/minghanz_data/CARLA(with_pose)/_out'
@@ -45,7 +46,7 @@ class LossOptions:
                         # 6 no normalization, no norm output
 
         self.pca_in_loss = False
-        self.subset_in_loss = True
+        self.subset_in_loss = False
 
         if self.width > 128:
             self.no_inner_prod = True

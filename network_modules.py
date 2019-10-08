@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from geometry_plot import draw3DPts
 
-from geometry import kern_mat, gramian, gen_3D, gen_3D_flat
+from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv
 
 # from fastai.vision import *
 # from torchvision import models
@@ -233,6 +233,7 @@ def gen_cam_K(source, width, height):
         cy=int(height/2)
         K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
     elif source == 'TUM':
+        #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
         fx = width/640.0*525.0  # focal length x
         fy = height/480.0*525.0  # focal length y
         cx = width/640.0*319.5  # optical center x
@@ -261,6 +262,12 @@ class innerProdLoss(nn.Module):
         self.min_norm_thresh = 0
 
         self.w_normalize = nn.Softmax(dim=2)
+
+        self.u_pad = torch.nn.ReflectionPad2d((1,1,0,0))
+        self.v_pad = torch.nn.ReflectionPad2d((0,0,1,1))
+        self.u_grad_kern = torch.tensor([[-0.5, 0, 0.5]], device=self.device).reshape(1,1,1,3)
+        self.v_grad_kern = torch.tensor([[-0.5], [0], [0.5]], device=self.device).reshape(1,1,3,1)
+        
 
     def options_from_source(self):
         '''
@@ -313,6 +320,10 @@ class innerProdLoss(nn.Module):
         feature2 = flat_sel[1]['feature']
         img1 = flat_sel[0]['img']
         img2 = flat_sel[1]['img']
+
+        hsv1 = rgb_to_hsv(img1, flat=True)
+        hsv2 = rgb_to_hsv(img2, flat=True)
+        
 
         loss = {}
 
@@ -480,6 +491,10 @@ class innerProdLoss(nn.Module):
         return loss
         
 
+    # def grad_img(self, img, direction):
+    #     if direction == 'u':
+    #         img_pad = self.u_pad(img)
+    #         grad = 
     def forward(self, sample_batch, output): # img1 and img2 only for visualization
         
         img1 = sample_batch['image 1'] ## maybe should use image_raw

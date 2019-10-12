@@ -17,26 +17,9 @@ import time
 
 from options import LossOptions, UnetOptions
 
-def vis_feat(feature, neg=False):
-    # only keep the positive or negative part of the feature map, normalize the max to 1 
-    # (removing border part because they sometimes are too large)
+from log import visualize_to_tensorboard, scale_to_tensorboard
 
-    if neg:
-        feat1_pos = -feature.clone().detach()
-        feat1_pos[feature > 0] = 0
-    else:
-        feat1_pos = feature.clone().detach()
-        feat1_pos[feature < 0] = 0
-    # feat1_pos[:,:,0:5,:] = 0
-    # feat1_pos[:,:,feat1_pos.shape[2]-5:feat1_pos.shape[2],:] = 0
-    # feat1_pos[:,:,:,0:5] = 0
-    # feat1_pos[:,:,:,feat1_pos.shape[3]-5:feat1_pos.shape[3]] = 0
-    
-    feat1_pos_max = torch.max(feat1_pos)
-    if feat1_pos_max > 0:
-        feat1_pos = feat1_pos / feat1_pos_max
-
-    return feat1_pos
+import json
 
 def split_train_val(img_pose_dataset, validation_split, batch_size=1):
     ### Create train and val set using a fixed seed
@@ -100,20 +83,36 @@ def mask_to_np(mask):
         mask_np[i] = mask[i].cpu().numpy()
     return mask_np
 
+def reorganize_inputs(sample_batch):
+    inputs = {}
+    inputs[0] = {}
+    inputs[1] = {}
+    for i in range(2):
+        inputs[i]['img'] = sample_batch['image {}'.format(i+1)]
+        inputs[i]['img_raw'] = sample_batch['image {} raw'.format(i+1)]
+        inputs[i]['depth'] = sample_batch['depth {}'.format(i+1)]
+        inputs[i]['idepth'] = sample_batch['idepth {}'.format(i+1)]
+        inputs[i]['gray'] = sample_batch['gray {}'.format(i+1)]
+    inputs['rela_pose'] = sample_batch['rela_pose']
+    inputs['rela_euler'] = sample_batch['rela_euler']
+    inputs['imgname 1'] = sample_batch['imgname 1']
+    return inputs
+
 def main():
 
     print('Cuda available?', torch.cuda.is_available())
-    device = torch.device('cuda' if torch.cuda.is_available()else 'cpu')
+    device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
 
     unet_options = UnetOptions()
     unet_options.setto()
     loss_options = LossOptions(unet_options)
     
-    from segmentation_models_pytorch.encoders import get_preprocessing_fn
-    preprocess_input_fn = get_preprocessing_fn('resnet34', pretrained='imagenet')
+    # from segmentation_models_pytorch.encoders import get_preprocessing_fn
+    # preprocess_input_fn = get_preprocessing_fn('resnet34', pretrained='imagenet')
+    preprocess_input_fn = None # using the above preprocessing function will make the rgb not in range [0, 1] and cause the rgb_to_hsv function to fail
 
     model_overall = UNetInnerProd(unet_options=unet_options, device=device, loss_options=loss_options )
-    lr = 1e-4
+    lr = loss_options.lr
     optim = torch.optim.Adam(model_overall.model_UNet.parameters(), lr=lr) #cefault 1e-3
 
     ### Create dataset
@@ -124,9 +123,9 @@ def main():
         folders=loss_options.folders )
     
     if not unet_options.run_eval:
-        data_loader_train, data_loader_val = split_train_val(img_pose_dataset, 0.1)
+        data_loader_train, data_loader_val = split_train_val(img_pose_dataset, 0.1, batch_size=loss_options.batch_size)
     else:
-        data_loader_train = DataLoader(img_pose_dataset, batch_size=1, shuffle=False)
+        data_loader_train = DataLoader(img_pose_dataset, batch_size=loss_options.batch_size, shuffle=False)
 
     if unet_options.run_eval:
         checkpoint = torch.load('saved_models/epoch00_6000.pth')
@@ -147,47 +146,57 @@ def main():
 
     epochs = 1
 
-    writer = SummaryWriter()
-
     print('going into loop')
     iter_overall = 0
     lr_change_time = 0
     start_time = time.time()
     ctime = time.ctime()
+    overall_time = 0
+
+    ## Configuring path for outputs
+    if loss_options.color_in_cost:
+        mode_folder = 'with_color'
+    else:
+        mode_folder = 'wo_color'
+    ## SummaryWriter
+    writers = {}
+    for mode in ["train", "val"]:
+        writers[mode] = SummaryWriter(os.path.join('runs', mode_folder + '_' + ctime + '_' + mode ))
+    ## Save model if training, output features if evaluating
     if not unet_options.continue_train: 
-        if loss_options.color_in_cost:
-            mode_folder = 'with_color_'
-        else:
-            mode_folder = 'wo_color_'
         if unet_options.run_eval:
-            output_folder = os.path.join('feature_output', mode_folder + ctime )
+            output_folder = os.path.join('feature_output', mode_folder + '_' + ctime )
             os.mkdir(output_folder)
         else:
-            save_model_folder = os.path.join('saved_models', mode_folder + ctime )
+            save_model_folder = os.path.join('saved_models', mode_folder + '_' + ctime  )
             os.mkdir(save_model_folder)
-    overall_time = 0
+    ## Save the options to a json file
+    options = {}
+    dict_unet = dict(unet_options.__dict__)
+    dict_loss = dict(loss_options.__dict__)
+    del dict_loss['opt_unet']
+    options['unet_options'] = dict_unet
+    options['loss_options'] = dict_loss
+
+    option_file_path = os.path.join('runs', mode_folder + '_' + ctime + '.json' )
+    with open(option_file_path, 'w') as option_file:
+        json.dump(options, option_file, indent=2)
+            
     for i_epoch in range(epochs):
         print('entering epoch', i_epoch) 
         for i_batch, sample_batch in enumerate(data_loader_train):
-            if i_batch > 12000:
+            if iter_overall > 20000:
                 break
-            img1 = sample_batch['image 1']
-            img2 = sample_batch['image 2']
-            img1_raw = sample_batch['image 1 raw']
-            img2_raw = sample_batch['image 2 raw']
+
+            ## Create a dictionary of inputs
+            inputs = reorganize_inputs(sample_batch)
             
-            dep1 = sample_batch['depth 1']
-            dep2 = sample_batch['depth 2']
-            idep1 = sample_batch['idepth 1']
-            idep2 = sample_batch['idepth 2']
-            pose1_2 = sample_batch['rela_pose']
-            euler1_2 = sample_batch['rela_euler']
-            
+            ## Mode selection
             if unet_options.run_eval:
                 visualize_mode = True
             else:
-                visualize_mode = i_batch % 100 == 0
-            eval_mode = i_batch % 100 == 0
+                visualize_mode = (iter_overall <= 1000 and iter_overall % 100 == 0) or (iter_overall > 1000 and iter_overall % 500 == 0)
+            eval_mode = iter_overall % 100 == 0
 
             if visualize_mode and loss_options.width <= 128:
                 model_overall.opt_loss.visualize_pca_chnl = True
@@ -196,57 +205,33 @@ def main():
                 model_overall.opt_loss.visualize_pca_chnl = False
                 model_overall.model_loss.opt.visualize_pca_chnl = False
 
-
-            model_overall.set_norm_level(i_batch)
-
+            ## Run through the model
             if unet_options.run_eval:
                 with torch.no_grad():
-                    losses, output = model_overall(sample_batch)
+                    losses, output = model_overall(inputs, iter_overall)
             else:
-                losses, output = model_overall(sample_batch)
-            
-            loss = losses['final']
-            innerp_loss = losses['CVO']
-            feat_norm = losses['norm']
-
-            if unet_options.pose_predict_mode:
-                innerp_loss_pred = losses['CVO_pred']
-                euler_pred = output['euler_pred']
-
-            if unet_options.weight_map_mode:
-                feat_w_1 = output[0]['feature_w']
-                feat_w_2 = output[1]['feature_w']
-            
-            feature1_norm = output[0]['feature_norm']
-            feature2_norm = output[1]['feature_norm']
-            feature1 = output[0]['feature']
-            feature2 = output[1]['feature']
-
-            if loss_options.pca_in_loss or loss_options.visualize_pca_chnl:
-                feature1_chnl3 = output[0]['feature_chnl3']
-                feature2_chnl3 = output[1]['feature_chnl3']
-                # feature1_norm_pca = output[0]['feature_norm_pca']
-                # feature2_norm_pca = output[1]['feature_norm_pca']
-                
-            if loss_options.subset_in_loss:
-                mask_1 = output[0]['norm_mask']
-                mask_2 = output[1]['norm_mask']
+                losses, output = model_overall(inputs, iter_overall)
 
             # if iter_overall == 0:
             #     writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
 
+            ## Generate feature map and point selection for images 
             if unet_options.run_eval:
+                feature1_norm = output[0]['feature_norm']
+                feature1 = output[0]['feature']  ## maybe should use feature_normalized, which is not calculated in eval_mode, so the code structure should be adjusted 
+                imgname = inputs['imgname 1']
+
                 mask1_topk = topk_coord_and_feat(feature1_norm, k=3000)
                 # mask1_top5k = topk_coord_and_feat(feature1_norm, k=5000)
                 # mask1_top8k = topk_coord_and_feat(feature1_norm, k=8000)
                 # mask1_top10k = topk_coord_and_feat(feature1_norm, k=10000)
+                output[0]['mask_topk'] = mask1_topk
                 feat_np1 = feat_to_np(feature1)
                 mask_np1 = mask_to_np(mask1_topk)
-                mask_np5k = mask_to_np(mask1_top5k)
-                mask_np8k = mask_to_np(mask1_top8k)
-                mask_np10k = mask_to_np(mask1_top10k)
+                # mask_np5k = mask_to_np(mask1_top5k)
+                # mask_np8k = mask_to_np(mask1_top8k)
+                # mask_np10k = mask_to_np(mask1_top10k)
 
-                imgname = sample_batch['imgname 1']
                 for i in range(len(feat_np1)):
                     feat_np1[i].tofile(os.path.join(output_folder, 'feat_'+imgname[i] +'.bin') )
                     mask_np1[i].tofile(os.path.join(output_folder, 'mask_'+imgname[i] +'.bin') )
@@ -256,172 +241,76 @@ def main():
 
                     print(iter_overall, 'imgname', i, ':', imgname[i])
 
-            if visualize_mode:
-                grid1 = torchvision.utils.make_grid(img1_raw)
-                grid2 = torchvision.utils.make_grid(img2_raw)
-
-                writer.add_image('img1',grid1, iter_overall)
-                writer.add_image('img2',grid2, iter_overall)
-
-                grid1fea = torchvision.utils.make_grid(feature1_norm)
-                grid2fea = torchvision.utils.make_grid(feature2_norm)
-
-                writer.add_image('feature1',grid1fea, iter_overall)
-                writer.add_image('feature2',grid2fea, iter_overall)
-
-                if unet_options.run_eval:
-                    grid1_mask = torchvision.utils.make_grid(mask1_topk)
-                    writer.add_image('mask1_topk',grid1_mask, iter_overall)
-                    # grid1_mask = torchvision.utils.make_grid(mask1_top5k)
-                    # writer.add_image('mask1_top5k',grid1_mask, iter_overall)
-                    # grid1_mask = torchvision.utils.make_grid(mask1_top8k)
-                    # writer.add_image('mask1_top8k',grid1_mask, iter_overall)
-                    # grid1_mask = torchvision.utils.make_grid(mask1_top10k)
-                    # writer.add_image('mask1_top10k',grid1_mask, iter_overall)
-
-                if unet_options.weight_map_mode:
-                    # feat_w_1 = feat_w_1 /  torch.max(feat_w_1)
-                    # feat_w_2 = feat_w_2 /  torch.max(feat_w_2)
-                    feat_w_1 = ( (feat_w_1 + torch.min(feat_w_1)) / (torch.max(feat_w_1) - torch.min(feat_w_1))*255 ).to(torch.uint8)
-                    feat_w_2 = ( (feat_w_2 + torch.min(feat_w_2)) / (torch.max(feat_w_2) - torch.min(feat_w_2))*255 ).to(torch.uint8)
-                    grid3 = torchvision.utils.make_grid(feat_w_1)
-                    grid4 = torchvision.utils.make_grid(feat_w_2)
-                    # print(feat_w_1)
-                    # print(torch.sum(feat_w_1))
-                    writer.add_image('weight1',grid3, iter_overall)
-                    writer.add_image('weight2',grid4, iter_overall)
-
-                if loss_options.subset_in_loss:
-                    grid1_mask = torchvision.utils.make_grid(mask_1)
-                    grid2_mask = torchvision.utils.make_grid(mask_2)
-
-                    writer.add_image('mask1',grid1_mask, iter_overall)
-                    writer.add_image('mask2',grid2_mask, iter_overall)
-
-                if loss_options.pca_in_loss or loss_options.visualize_pca_chnl:
-                    feat1_abs = torch.abs(feature1_chnl3)
-                    feat2_abs = torch.abs(feature2_chnl3)
-                    min_fea_1_abs = torch.min(feat1_abs)
-                    min_fea_2_abs = torch.min(feat2_abs)
-                    max_fea_1_abs = torch.max(feat1_abs)
-                    max_fea_2_abs = torch.max(feat2_abs)
-                    max_fea_1 = max_fea_1_abs
-                    max_fea_2 = max_fea_2_abs
-
-                    writer.add_scalar('min_fea_1_abs', min_fea_1_abs, iter_overall)
-                    writer.add_scalar('min_fea_2_abs', min_fea_2_abs, iter_overall)
-                    writer.add_scalar('max_fea_1_abs', max_fea_1_abs, iter_overall)
-                    writer.add_scalar('max_fea_2_abs', max_fea_2_abs, iter_overall)
-
-                    # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
-                    feat1_pos = vis_feat(feature1_chnl3)
-                    feat1_neg = vis_feat(feature1_chnl3, neg=True)
-                    feat2_pos = vis_feat(feature2_chnl3)
-                    feat2_neg = vis_feat(feature2_chnl3, neg=True)
-
-                    grid1pos = torchvision.utils.make_grid(feat1_pos)
-                    grid1neg = torchvision.utils.make_grid(feat1_neg)
-                    grid2pos = torchvision.utils.make_grid(feat2_pos)
-                    grid2neg = torchvision.utils.make_grid(feat2_neg)
-
-                    writer.add_image('feature1_pos',grid1pos, iter_overall)
-                    writer.add_image('feature1_neg',grid1neg, iter_overall)
-                    writer.add_image('feature2_pos',grid2pos, iter_overall)
-                    writer.add_image('feature2_neg',grid2neg, iter_overall)
-                
-
-            ###############################################################
+            ## Log to tensorboard
+            if unet_options.run_eval:
+                if visualize_mode:
+                    visualize_to_tensorboard(sample_batch, output, writers['val'], unet_options, loss_options, iter_overall)
+                scale_to_tensorboard(losses, writers['val'], unet_options, loss_options, iter_overall, output=output)
+            else:
+                if visualize_mode:
+                    visualize_to_tensorboard(sample_batch, output, writers['train'], unet_options, loss_options, iter_overall)
+                scale_to_tensorboard(losses, writers['train'], unet_options, loss_options, iter_overall, output=output)
 
             
-            # feat_test=feature1_chnl3.clone().detach()
-            # feat_test[:,:,:,:] = 0
-            # feat_test[:,:,0:10, :] = 0.2
-            # feat_test[:,:,10:20, :] = 0.1
-            # # feat_test[:,:,20:30, :] = 1.8
-            # # feat_test[:,:,30:40, :] = -1.1
-            # grid_test= torchvision.utils.make_grid(feat_test)
-            # writer.add_image('feature_test',grid_test, iter_overall)
-            if unet_options.run_eval:
-                writer.add_scalar('loss', loss, iter_overall)
-            else:
-                writer.add_scalars('loss', {'train': loss}, iter_overall)
-
-            if loss_options.sparsify_mode != 6 and loss_options.sparsify_mode != 1:
-                # 6 and 1 are the only modes where norm is not calculated 
-                if unet_options.run_eval:
-                    writer.add_scalar('innerp_loss', innerp_loss, iter_overall)
-                else:
-                    writer.add_scalars('innerp_loss', {'train': innerp_loss}, iter_overall)
-                writer.add_scalar('feat_norm', feat_norm, iter_overall)
-            if unet_options.pose_predict_mode:
-                writer.add_scalar('innerp_loss_pred', innerp_loss_pred, iter_overall)
-
-            ### optimize
+            ### Optimize
+            loss = losses['final'] / loss_options.iter_between_update
             if not unet_options.run_eval:
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
+                # optim.zero_grad()
+                # loss.backward()
+                # optim.step()
 
-            if i_batch %10 == 0:
+                if iter_overall > 0 and iter_overall % loss_options.iter_between_update == 0:
+                    optim.step()
+                    optim.zero_grad()
+                    # print('optimizer update at', iter_overall)
+
+                loss.backward()
+                
+
+            if iter_overall %10 == 0:
                 time_now = time.time()
                 time_duration = time_now - start_time
                 overall_time += time_duration
                 start_time = time_now
-                print('batch', i_batch, 'finished. Time: {:.1f}, {:.1f}.'.format(time_duration, overall_time), 'Max mem:', torch.cuda.max_memory_allocated() )
-                if unet_options.pose_predict_mode:
-                    print('euler:')
-                    print(euler1_2)
-                    print('pred_euler:')
-                    print(euler_pred)
+                print('Epoch', i_epoch, 'Batch', i_batch, 'Loss', float(loss), 'Time: {:.1f}, {:.1f}.'.format(time_duration, overall_time), 'Max mem:', torch.cuda.max_memory_allocated() )
+                # if unet_options.pose_predict_mode:
+                #     euler1_2 = sample_batch['rela_euler']
+
+                #     print('euler:')
+                #     print(euler1_2)
+                #     print('pred_euler:')
+                #     print(euler_pred)
 
             ### adjust learning rate
             if (not unet_options.run_eval) & (not loss_options.subset_in_loss) :
-                if lr_change_time==0 and (i_batch ==6000 or loss < -1e7):
-                    lr_change_time += 1
+                if iter_overall > 0 and iter_overall % loss_options.lr_decay_iter == 0:
+                # if lr_change_time==0 and (iter_overall ==6000 or loss < -1e7):
+                    # lr_change_time += 1
                     lr = lr * 0.1
                     for g in optim.param_groups:
                         g['lr'] = g['lr'] * 0.1
-                    print('learning rate 0.1x at', i_batch, ', now:', lr)
-                # if lr_change_time==1 and (i_batch ==6000 or loss < -1e10):
-                #     lr_change_time += 1
-                #     lr = lr * 0.1
-                #     for g in optim.param_groups:
-                #         g['lr'] = g['lr'] * 0.1
-                #     print('learning rate 0.1x at', i_batch, ', now:', lr)
+                    print('learning rate 0.1x at', iter_overall, ', now:', lr)
 
 
             ### validation
             if not unet_options.run_eval:
                 if eval_mode:
                     sample_val = next(iter(data_loader_val))
-                    img1 = sample_val['image 1']
-                    img2 = sample_val['image 2']
-                    img1_raw = sample_val['image 1 raw']
-                    img2_raw = sample_val['image 2 raw']
-                    
-                    dep1 = sample_val['depth 1']
-                    dep2 = sample_val['depth 2']
-                    idep1 = sample_val['idepth 1']
-                    idep2 = sample_val['idepth 2']
-                    pose1_2 = sample_val['rela_pose']
-                    euler1_2 = sample_val['rela_euler']
+                    inputs_val = reorganize_inputs(sample_val)
 
                     model_overall.eval()
                     with torch.no_grad():
-                        losses, output = model_overall(sample_val)                    
-                        loss = losses['final']
+                        losses, _ = model_overall(inputs_val)
                                 
                     model_overall.train()
                     
-                    writer.add_scalars('loss', {'val': loss}, iter_overall)
-                    # writer.add_scalars('innerp_loss', {'val': innerp_loss}, iter_overall)
+                    scale_to_tensorboard(losses, writers['val'], unet_options, loss_options, iter_overall)
 
-
-                if iter_overall % 1000 == 0:
+                if iter_overall % 2000 == 0:
                     if unet_options.continue_train:
-                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}_continued.pth'.format(i_epoch, iter_overall ) )
+                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}_continued.pth'.format(i_epoch, i_batch ) )
                     else:
-                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, iter_overall ) )
+                        model_path_save = os.path.join(save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, i_batch ) )
                     torch.save({
                         'epoch': i_epoch,
                         'model_state_dict': model_overall.model_UNet.state_dict(),
@@ -433,7 +322,8 @@ def main():
 
             iter_overall += 1
 
-    writer.close()
+    for mode in writers:
+        writers[mode].close()
 
 if __name__ == "__main__":
     main()

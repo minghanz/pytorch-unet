@@ -200,7 +200,9 @@ def process_rgb_file(img_file):
     img = skimage.io.imread(img_file)
     img = img.astype(float)
     img_norm = img / 255
-    return img_norm
+    gray = skimage.color.rgb2gray(img_norm)
+    gray = gray[..., np.newaxis]
+    return img_norm, gray
 
 def load_from_carla(folders):
     folders = sorted(folders)
@@ -455,11 +457,14 @@ class ToTensor(object):
     def __call__(self, sample):
         image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
         image_1_raw, image_2_raw = sample['image 1 raw'], sample['image 2 raw']
+        gray_1, gray_2 = sample['gray 1'], sample['gray 2']
         # swap color axis because
         # numpy image: H x W x C
         # torch image: C X H X W
         image_1 = image_1.transpose((2, 0, 1))
         image_2 = image_2.transpose((2, 0, 1))
+        gray_1 = gray_1.transpose((2, 0, 1))
+        gray_2 = gray_2.transpose((2, 0, 1))
         depth_1 = depth_1.transpose((2, 0, 1))
         depth_2 = depth_2.transpose((2, 0, 1))
         idepth_1 = idepth_1.transpose((2, 0, 1))
@@ -473,6 +478,8 @@ class ToTensor(object):
                     'image 2': torch.from_numpy(image_2),
                     'image 1 raw': torch.from_numpy(image_1_raw),
                     'image 2 raw': torch.from_numpy(image_2_raw),
+                    'gray 1': torch.from_numpy(gray_1),
+                    'gray 2': torch.from_numpy(gray_2),
                     'depth 1': torch.from_numpy(depth_1),
                     'depth 2': torch.from_numpy(depth_2),
                     'idepth 1': torch.from_numpy(idepth_1),
@@ -484,6 +491,8 @@ class ToTensor(object):
                     'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
                     'image 1 raw': torch.from_numpy(image_1_raw).to(self.device, dtype=torch.float),
                     'image 2 raw': torch.from_numpy(image_2_raw).to(self.device, dtype=torch.float),
+                    'gray 1': torch.from_numpy(gray_1).to(self.device, dtype=torch.float),
+                    'gray 2': torch.from_numpy(gray_2).to(self.device, dtype=torch.float),
                     'depth 1': torch.from_numpy(depth_1).to(self.device, dtype=torch.float),
                     'depth 2': torch.from_numpy(depth_2).to(self.device, dtype=torch.float),
                     'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
@@ -507,6 +516,7 @@ class Rescale(object):
 
     def __call__(self, sample):
         image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
+        gray_1, gray_2 = sample['gray 1'], sample['gray 2']
         h, w = image_1.shape[:2]
 
         if isinstance(self.output_size, int):
@@ -523,6 +533,8 @@ class Rescale(object):
 
         image_1 = skimage.transform.resize(image_1, (new_h, new_w) )
         image_2 = skimage.transform.resize(image_2, (new_h, new_w) )
+        gray_1 = skimage.transform.resize(gray_1, (new_h, new_w) )
+        gray_2 = skimage.transform.resize(gray_2, (new_h, new_w) )
         ### different scaling strategy for depth to avoid averaging with zeros to create arrow-like scattered points
         depth_1 = skimage.transform.resize(depth_1, (new_h, new_w), order=0,anti_aliasing=False ) 
         depth_2 = skimage.transform.resize(depth_2, (new_h, new_w), order=0,anti_aliasing=False )
@@ -537,6 +549,8 @@ class Rescale(object):
                     'image 2': image_2_processed,
                     'image 1 raw': image_1,
                     'image 2 raw': image_2,
+                    'gray 1': gray_1,
+                    'gray 2': gray_2,
                     'depth 1': depth_1,
                     'depth 2': depth_2,
                     'idepth 1': idepth_1,
@@ -548,6 +562,8 @@ class Rescale(object):
                     'image 2': image_2,
                     'image 1 raw': image_1,
                     'image 2 raw': image_2,
+                    'gray 1': gray_1,
+                    'gray 2': gray_2,
                     'depth 1': depth_1,
                     'depth 2': depth_2,
                     'idepth 1': idepth_1,
@@ -583,8 +599,8 @@ class ImgPoseDataset(Dataset):
         return self.len_pairs
 
     def __getitem__(self, idx):
-        image_1 = process_rgb_file(self.pair_seq[idx]['image_path 1'])
-        image_2 = process_rgb_file(self.pair_seq[idx]['image_path 2'])
+        image_1, gray_1 = process_rgb_file(self.pair_seq[idx]['image_path 1'])
+        image_2, gray_2 = process_rgb_file(self.pair_seq[idx]['image_path 2'])
         # depth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'])
         # depth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'])
         if 'CARLA' in self.root_dir:
@@ -600,7 +616,7 @@ class ImgPoseDataset(Dataset):
         img_name1 = self.pair_seq[idx]['image_path 1'].split('/')[-1][:-4]
 
         # sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
-        sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 
+        sample = {'image 1': image_1, 'image 2': image_2, 'gray 1': gray_1, 'gray 2': gray_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 
                     'rela_pose': rela_pose, 'rela_euler': rela_euler, 'imgname 1': img_name1}
     
         if self.transform:

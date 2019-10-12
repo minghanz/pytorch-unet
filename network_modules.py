@@ -8,7 +8,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from geometry_plot import draw3DPts
 
-from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv
+from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv, gen_rand_pose, gen_cam_K, gen_noisy_pose, gen_uvgrid
+
+from log import remove_edge
 
 # from fastai.vision import *
 # from torchvision import models
@@ -84,197 +86,103 @@ class UNetInnerProd(nn.Module):
         if self.opt_unet.pose_predict_mode:
             self.pose_predictor = UNetRegressor(batch_norm=True, feature_channels=n_classes*2).to(device)
 
-    def forward(self, sample_batch):
-        img1 = sample_batch['image 1']
-        img2 = sample_batch['image 2']
-        img1_raw = sample_batch['image 1 raw']
-        img2_raw = sample_batch['image 2 raw']
+    def forward(self, inputs, i_batch=None):
         
-        dep1 = sample_batch['depth 1']
-        dep2 = sample_batch['depth 2']
-        idep1 = sample_batch['idepth 1']
-        idep2 = sample_batch['idepth 2']
-        pose1_2 = sample_batch['rela_pose']
-        # euler1_2 = sample_batch['rela_euler']
+        if i_batch is not None:
+            self.iteration_related_setting(i_batch)
 
-        output = {}   # {0:, 1:, 'pose_pred':}
-        output[0] = {}
-        output[1] = {}
+        outputs = self.feature_map_generation(inputs)
 
-        if self.opt_unet.weight_map_mode:
-            feature1, feature1_w = self.model_UNet(img1)
-            feature2, feature2_w = self.model_UNet(img2)
-            output[0]['feature_w'] = feature1_w
-            output[1]['feature_w'] = feature2_w   
-        else: # 2/3/4
-            feature1 = self.model_UNet(img1)
-            feature2 = self.model_UNet(img2)
-        
-        # print(torch.cuda.memory_allocated(device=self.device))
+        # dep1.requires_grad = False
+        # dep2.requires_grad = False
+        # pose1_2.requires_grad = False
 
-        ## process feature to SVD
-        # if self.opt_loss.pca_in_loss or self.opt_loss.subset_in_loss:
-        feature1_centered = feature1 - torch.mean(feature1, dim=(2,3), keepdim=True)
-        feature2_centered = feature1 - torch.mean(feature2, dim=(2,3), keepdim=True)
+        # if self.opt_unet.pose_predict_mode:
+        # # with pose predictor
+        #     euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
+        #     pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
+        #     outputs['pose_pred'] = pose1_2_pred
+        #     outputs['euler_pred'] = euler_pred
 
-        feature1_norm = torch.norm(feature1_centered, dim=1)
-        feature2_norm = torch.norm(feature2_centered, dim=1)
-        feature1_norm = feature1_norm / torch.max(feature1_norm)
-        feature2_norm = feature2_norm / torch.max(feature2_norm)
-        output[0]['feature_norm'] = feature1_norm
-        output[1]['feature_norm'] = feature2_norm
+        loss, outputs = self.model_loss(inputs, outputs, i_batch)
+        return loss, outputs
 
-        if self.opt_loss.pca_in_loss or self.opt_loss.visualize_pca_chnl:
-            feature1_3, feature1_pca = feat_pca(feature1_centered)
-            feature2_3, feature2_pca = feat_pca(feature2_centered)
-            output[0]['feature_pca'] = feature1_pca
-            output[1]['feature_pca'] = feature2_pca
-            output[0]['feature_chnl3'] = feature1_3
-            output[1]['feature_chnl3'] = feature2_3
-            # feature1_norm_pca = torch.norm(feature1_pca, dim=1)
-            # feature2_norm_pca = torch.norm(feature2_pca, dim=1)
-            # feature1_norm_pca = feature1_norm_pca / torch.max(feature1_norm_pca)
-            # feature2_norm_pca = feature2_norm_pca / torch.max(feature2_norm_pca)
-            # output[0]['feature_norm_pca'] = feature1_norm_pca
-            # output[1]['feature_norm_pca'] = feature2_norm_pca
+    def feature_map_generation(self, inputs):
+        outputs = {}   # {0:, 1:, 'pose_pred':}
+        outputs[0] = {}
+        outputs[1] = {}
 
+        ####### Generate feature map from UNet
+        for i in range(2):
+            ## load input
+            img = inputs[i]['img']
+
+            ## run through unet
+            if self.opt_unet.weight_map_mode:
+                feature, feature_w = self.model_UNet(img)
+                outputs[i]['feature_w'] = feature_w 
+            else:
+                feature = self.model_UNet(img)
+            ## centralize feature
+            feature_centered = feature - torch.mean(feature, dim=(2,3), keepdim=True)
+            # ## manually zeroing edge part
+            remove_edge(feature_centered)
+            ## normalize the max of feature norm of any pixel to 1
+            feature_norm = torch.norm(feature_centered, dim=1, keepdim=True)
+            feature_norm = feature_norm / torch.max(feature_norm)
+            outputs[i]['feature_norm'] = feature_norm
+            ## PCA
+            if self.opt_loss.pca_in_loss or self.opt_loss.visualize_pca_chnl:
+                feature_3, feature_pca = feat_pca(feature_centered)
+                outputs[i]['feature_pca'] = feature_pca
+                outputs[i]['feature_chnl3'] = feature_3
+            ## what is used in calculation of loss
             if self.opt_loss.pca_in_loss:
-                feature1 = feature1_pca
-                feature2 = feature2_pca
+                outputs[i]['feature'] = feature_pca
+            else:
+                outputs[i]['feature'] = feature_centered # feature or feature_centered? 
+        return outputs
 
-        output[0]['feature'] = feature1
-        output[1]['feature'] = feature2 
 
-        dep1.requires_grad = False
-        dep2.requires_grad = False
-        pose1_2.requires_grad = False
-
-        if self.opt_unet.pose_predict_mode:
-        # with pose predictor
-            euler_pred = self.pose_predictor(feature1, feature2, idep1, idep2)
-            pose1_2_pred = pose_from_euler_t_Tensor(euler_pred, device=self.device)
-            output['pose_pred'] = pose1_2_pred
-            output['euler_pred'] = euler_pred
-
-        loss, output = self.model_loss(sample_batch, output)
-        return loss, output
-
-    def set_norm_level(self, i_batch):
+    def iteration_related_setting(self, i_batch):
         self.model_loss.set_norm_level(i_batch)
-        if i_batch < 3000:
-            self.model_loss.min_norm_thresh = 0
-        elif i_batch < 6000:
-            self.model_loss.min_norm_thresh = 0.1
-        else:
-            self.model_loss.min_norm_thresh = 0.2
         return
-
-
-def gen_rand_pose(source, noise_trans_scale, device):
-    ### do not use np.random to generate random number because they can not be tracked by pytorch backend
-    # trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
-    # rot_noise = np.random.normal(scale=3.0, size=(3,))
-    #####################################################################################################
-    trans_noise = torch.randn((3), dtype=torch.float, device=device) * noise_trans_scale
-    # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
-    rot_noise = torch.zeros(3, dtype=torch.float, device=device)
-    
-    if source=='CARLA':
-        noise_euler_tensor = torch.stack([ trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2] ]).unsqueeze(0)
-        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
-    elif source=='TUM':
-        noise_euler_tensor = torch.stack([trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]]).unsqueeze(0)
-        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
-    pose1_2_noise.requires_grad = False
-
-    return pose1_2_noise
-
-def gen_noisy_pose(pose1_2_noise, mean_trans_2):
-    ##### move ot center, purturb, rotate back
-    device = mean_trans_2.device
-
-    trans = torch.tensor([0., 0., 0.], dtype=torch.float, device=device)
-
-    trans_rot = torch.stack([-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2]])
-    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
-    trans_back = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
-    trans_back.requires_grad = False
-
-    trans_rot = torch.stack([mean_trans_2[0], mean_trans_2[1], mean_trans_2[2]])
-    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
-    trans_forth = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
-    trans_forth.requires_grad = False
-
-    pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(pose1_2_noise, trans_back) )
-    return pose1_2_noisy
-
-def gen_uvgrid(width, height, inv_K):
-    device = inv_K.device
-    u_grid = torch.tensor(np.arange(width), dtype=torch.float, device=device )
-    v_grid = torch.tensor(np.arange(height), dtype=torch.float, device=device )
-    uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
-    vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
-    uv1_grid = torch.stack( (uu_grid, vv_grid, torch.ones(uu_grid.size(), dtype=torch.float, device=device) ), dim=0 ) # 3*N, correspond to u,v,1
-    yz1_grid = torch.mm(inv_K, uv1_grid) # 3*N, corresponding to x,y,z
-    return uv1_grid, yz1_grid
-
-def gen_cam_K(source, width, height):
-    '''
-        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
-        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
-        TUM xyz is right(u)-down(v)-front
-        Output is nparray
-    '''
-    assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
-    if source == 'CARLA':
-        fx=int(width/2)
-        fy=int(width/2)
-        cx=int(width/2)
-        cy=int(height/2)
-        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
-    elif source == 'TUM':
-        #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
-        fx = width/640.0*525.0  # focal length x
-        fy = height/480.0*525.0  # focal length y
-        cx = width/640.0*319.5  # optical center x
-        cy = height/480.0*239.5  # optical center y
-        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
-    return K
 
 class innerProdLoss(nn.Module):
     def __init__(self, device, opt_loss):
         super(innerProdLoss, self).__init__()
+        ## Device and options
         self.device = device
         self.opt = opt_loss
-        # K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ])
-        # K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
-        # input: x front, y right (aligned with u direction), z down (aligned with v direction) [CARLA definition]
-        # output: u, v, 1
-        
         self.options_from_source()
 
+        ## Intrinsic matrix
         self.K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
         inv_K = torch.tensor(np.linalg.inv(self.K), dtype=torch.float).to(self.device)
         self.K = torch.tensor(self.K).to(self.device)
 
+        ## For generating point cloud
         self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
         
+        ## For selecting pixels according to the norm of the feature vector, when self.opt.subset_in_loss is True
         self.min_norm_thresh = 0
 
+        ## For normalizing the weight map to [0,1], when self.opt.opt_unet.weight_map_mode is True
         self.w_normalize = nn.Softmax(dim=2)
 
+        ## For calculating gradient of grayscale image
         self.u_pad = torch.nn.ReflectionPad2d((1,1,0,0))
         self.v_pad = torch.nn.ReflectionPad2d((0,0,1,1))
         self.u_grad_kern = torch.tensor([[-0.5, 0, 0.5]], device=self.device).reshape(1,1,1,3)
         self.v_grad_kern = torch.tensor([[-0.5], [0], [0.5]], device=self.device).reshape(1,1,3,1)
+
+        ## For setting the initial dist_coef (scale)
+        self.dist_coef = self.opt.dist_coef
         
 
     def options_from_source(self):
         '''
-        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
-        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
-        TUM xyz is right(u)-down(v)-front
-        dist_coef is scaling in the exponential in the RBF kernel, related to the movement and scenario scale in the data
+        noise_trans_scale related to the purturbation to the true pose, used to calculate the sensitivity to the pose
         '''
         assert self.opt.source == 'CARLA' or self.opt.source == 'TUM', 'source unrecognized'
         if self.opt.source == 'CARLA':
@@ -285,6 +193,9 @@ class innerProdLoss(nn.Module):
             self.noise_trans_scale = 0.1
 
     def set_norm_level(self, i_batch):
+        '''
+        dist_coef is scaling in the exponential in the RBF kernel, related to the movement and scenario scale in the data
+        '''
         # if i_batch < 500:
         #     self.dist_coef = 3e-1
         # elif i_batch < 1200:
@@ -293,92 +204,222 @@ class innerProdLoss(nn.Module):
         #     self.dist_coef = 5e-2
         # else:
         #     self.dist_coef = 1e-2
+        ## set the coefficient lambda of norm loss in total loss
+        # self.norm_scale = 1e-3
 
-        self.dist_coef = 1e-1
-        # ## set the coefficient lambda of norm loss
-        # if i_batch < 1000:
-        #     self.norm_scale = 0
-        # elif i_batch < 2000:
-        #     self.norm_scale = 1e-3
-        # elif i_batch < 3000:
-        #     self.norm_scale = 1e-2
-        # # elif i_batch < 2000:
-        # #     self.norm_scale = 1
-        # else:
-        #     self.norm_scale = 1e-1
+        # self.dist_coef = 1e-1
+        # self.dist_coef = {}
+        # self.dist_coef['xyz_align'] = 0.1
+        # self.dist_coef['img'] = 0.1
+        # self.dist_coef['feature'] = 1 ###?
+        # self.dist_coef['xyz_noisy'] = 0.1
 
-        # # if self.sparsify:
-        # #     self.norm_scale *= 1e-2
+        if i_batch < 3000:
+            self.min_norm_thresh = 0
+        elif i_batch < 6000:
+            self.min_norm_thresh = 0.1
+        else:
+            self.min_norm_thresh = 0.2
 
+
+    def forward(self, inputs, outputs, i_batch=None): # img1 and img2 only for visualization
+        self.i_batch = i_batch
+        pose1_2 = inputs['rela_pose']
+
+        self.gen_mask(inputs, outputs)
+        self.gen_grad_map(inputs, outputs)
+
+        inout_flat = self.flatten_inputs_outputs(inputs, outputs)
+            
+        if self.opt.diff_mode:
+            self.pose1_2_noise = gen_rand_pose(self.opt.source, self.noise_trans_scale, self.device)
+
+        ########################## calculate loss by going over each sample in the batch ##########################
+        ### Every sample should be processed separately because the selected pixels in each images are not the same.
+        ### However, the calc_loss function is still designed to process a mini-batch for better compatibility. Each
+        ### sample is augmented a dimension to pretend a mini-batch
+
+        losses = {}
+        batch_size = inputs[0]['img'].shape[0]
+
+        for i in range(batch_size):
+            flat_sel = {} # a single data (pair) to be fed to masking and calculating loss 
+            flat_sel[0] = self.selected(inout_flat, 0, i) #3*N
+            flat_sel[1] = self.selected(inout_flat, 1, i) #3*N  
+
+            if not self.opt.no_inner_prod:
+                if not self.opt.opt_unet.pose_predict_mode:
+                    if self.opt.diff_mode:
+                        loss_single, loss_single_noisy = self.calc_loss(flat_sel, pose1_2)
+                    else:
+                        loss_single = self.calc_loss(flat_sel, pose1_2)
+                # else:
+                #     pose1_2_pred = outputs['pose_pred'][i]
+                #     loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
+                #     losses['CVO_pred'] += loss_single['CVO_pred']
+                    
+                ## Put the feature_normalized in fea_flat to output
+                self.output_feature_normalized(flat_sel, outputs)
+
+                for item in loss_single:
+                    if i == 0:
+                        losses[item] = torch.tensor(0., device=self.device)
+                    losses[item] += loss_single[item]
+        
+        losses['final'] = torch.tensor(0., device=self.device)
+        for i in range(len(self.opt.loss_item)):
+            losses['final'] += losses[self.opt.loss_item[i]] * self.opt.loss_weight[i]
+            
+        return losses, outputs
+
+    def gen_grad_map(self, inputs, outputs):
+
+        for i in range(2):
+            outputs[i]['grad_u'] = self.grad_img(inputs[i]['gray'], direction='u') + 0.5 # make it range [0,1]
+            outputs[i]['grad_v'] = self.grad_img(inputs[i]['gray'], direction='v') + 0.5
+        
+        return
+
+    def grad_img(self, gray, direction):
+        if direction == 'u':
+            gray_pad = self.u_pad(gray)
+            grad = nn.functional.conv2d(gray_pad, self.u_grad_kern)
+        elif direction == 'v':
+            gray_pad = self.v_pad(gray)
+            grad = nn.functional.conv2d(gray_pad, self.v_grad_kern)
+        else:
+            raise ValueError("Unrecognized direction!")
+
+        return grad
+
+    def gen_mask(self, inputs, outputs):
+        for i in range(2):
+            outputs[i]['mask'] = inputs[i]['depth'] > 0
+            remove_edge(outputs[i]['mask'], byte_mode=True)
+            # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.opt.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.opt.height - 5)
+            if self.opt.subset_in_loss:
+                outputs[i]['norm_mask'] = outputs[i]['feature_norm'] >= self.min_norm_thresh
+                outputs[i]['mask'] = outputs[i]['norm_mask'] & outputs[i]['mask']
+
+        return
+
+    def flatten_inputs_outputs(self, inputs, outputs):
+        inout_flat = {}
+        inout_flat[0] = {}
+        inout_flat[1] = {}
+
+        items_to_be_reshaped = ['depth', 'img', 'feature', 'grad_u', 'grad_v', 'mask']
+        if self.opt.opt_unet.weight_map_mode:
+            items_to_be_reshaped.append('feature_w')
+
+        for i in range(2):
+            for item in items_to_be_reshaped:
+                if item in inputs[i]:
+                    inout_flat[i][item] = inputs[i][item].reshape(inputs[i][item].shape[0], inputs[i][item].shape[1], -1)
+                elif item in outputs[i]:
+                    inout_flat[i][item] = outputs[i][item].reshape(outputs[i][item].shape[0], outputs[i][item].shape[1], -1)
+                else:
+                    print("Inputs: ", list(inputs[i].keys()) )
+                    print("Outputs: ", list(outputs[i].keys()) )
+                    raise ValueError("The item {} to be reshaped is not in either inputs or outputs! ".format(item))
+                # fea_w_flat_1 = self.w_normalize( feature1_w.reshape(batch_size, 1, n_pts_1) ) # B*C*N1
+                # fea_w_1 = fea_w_flat_1.reshape(batch_size, 1, feature1_w.shape[2], feature1_w.shape[3] )
+        return inout_flat
+
+    
+    def selected(self, inout_flat, i, j):
+        ### i is 0 or 1 (camera 0 or 1), j is index in the mini-batch
+    # def selected(self, depth_flat_sample, fea_flat_sample, img_flat_sample, fea_w_flat_sample=None, fea_norm_flat_sample=None):
+        '''
+        Input is 1*N or 3*N
+        Output 1*C*N (keep the batch dimension)
+        '''
+        mask = inout_flat[i]['mask'][j].squeeze()
+        
+        flat_sel = {}
+
+        items_to_select = ['depth', 'feature', 'img', 'grad_u', 'grad_v']
+        if self.opt.opt_unet.weight_map_mode:
+            items_to_select.append('feature_w')
+
+        for item in items_to_select:
+            flat_sel[item] = inout_flat[i][item][j][:,mask].unsqueeze(0) # pretend to be a mini-batch of batch size 1
+
+        yz1_grid_selected = self.yz1_grid[:,mask]
+        xyz_selected = yz1_grid_selected * flat_sel['depth'].squeeze(0)
+        flat_sel['xyz'] = xyz_selected.unsqueeze(0)
+
+        if self.opt.opt_unet.weight_map_mode:
+            flat_sel['feature_w'] = self.w_normalize(flat_sel['feature_w'])
+
+        return flat_sel
+
+    
     def calc_loss(self, flat_sel, pose1_2, pose1_2_pred=None):
         '''
         Input points are flat
         '''
+        ### 1. Calculate gramian of each item
+        self.xyz_align_with_pose(flat_sel, pose1_2)
+
+        gramians = {}
+        item_to_calc_gram = ['feature', 'xyz_align']
+        if self.opt.color_in_cost:
+            item_to_calc_gram.append('img')
+
+        for item in item_to_calc_gram:
+            gramians[item] = self.calc_gramian(flat_sel, item)
+        
+        ### 2. Calculate inner product
+        inner_prods = self.calc_inner_prod(gramians, flat_sel)
+        ### 3. Calculate loss
+        losses = self.calc_loss_from_inner_prod( inner_prods, flat_sel )
+
+        if self.opt.diff_mode:
+            ### 1. Calculate gramian of each item
+            gramians_noisy = {}
+            gramians_noisy['xyz_noisy'] = self.calc_gramian(flat_sel, 'xyz_noisy')
+            gramians_noisy['feature'] = gramians['feature']
+            if self.opt.color_in_cost:
+                gramians_noisy['img'] = gramians['img']
+
+            ### 2. Calculate inner product
+            inner_prods_noisy = self.calc_inner_prod(gramians_noisy, flat_sel)
+            ### 3. Calculate loss
+            losses_noisy = self.calc_loss_from_inner_prod( inner_prods_noisy, flat_sel )
+
+            return losses, losses_noisy
+            
+        # print('now original')
+        # draw3DPts(xyz1, xyz2, img1, img2)
+        # print('now matched')
+        # draw3DPts(xyz1, xyz2_trans, img1, img2)
+        
+        # if self.opt.opt_unet.pose_predict_mode: # obselete
+        #     xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
+        #     pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
+        #     if self.opt.color_in_cost:
+        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
+        #     else:
+        #         inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
+
+        #     final_loss = final_loss + inner_neg_pred
+        #     loss['CVO_pred'] = inner_neg_pred
+
+        return losses
+
+    def xyz_align_with_pose(self, flat_sel, pose1_2):
+
         xyz1 = flat_sel[0]['xyz']
         xyz2 = flat_sel[1]['xyz']
-        feature1 = flat_sel[0]['feature']
-        feature2 = flat_sel[1]['feature']
-        img1 = flat_sel[0]['img']
-        img2 = flat_sel[1]['img']
-
-        hsv1 = rgb_to_hsv(img1, flat=True)
-        hsv2 = rgb_to_hsv(img2, flat=True)
-        
-
-        loss = {}
-
-        if self.opt.opt_unet.weight_map_mode:
-            feature1_w = flat_sel[0]['feature_w']
-            feature2_w = flat_sel[1]['feature_w']
 
         xyz2_homo = torch.cat( ( xyz2, torch.ones((xyz2.shape[0], 1, xyz2.shape[2])).to(self.device) ), dim=1) # B*4*N
         xyz2_trans_homo = torch.matmul(pose1_2, xyz2_homo) # B*4*N
         xyz2_trans = xyz2_trans_homo[:, 0:3, :] # B*3*N
 
-        if self.opt.sparsify_mode == 1:
-            # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
-            norm_mode = True
-            norm_dim = 1
-        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
-            # normalize L1 norm of each channel, output L2 norm of each channel
-            norm_mode = True
-            norm_dim = 2
-        elif self.opt.sparsify_mode == 3:
-            # no normalization, output L1 norm of each channel
-            norm_mode = False
-            norm_dim = 2
-        elif self.opt.sparsify_mode == 4:
-            # no normalization, output L2 norm of each pixel
-            norm_mode = False
-            norm_dim = 1
-        elif self.opt.sparsify_mode == 6:
-            # no normalization, no norm output
-            norm_mode = False
-            norm_dim = 0
-            
-        ################# inner product of features, position and color ####################################
-        gramian_feat, fea_norm_sum = gramian(feature1, feature2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim) # could be kernelized or not
-        pcl_diff_exp = kern_mat(xyz1, xyz2_trans, self.dist_coef)
+        flat_sel[0]['xyz_align'] = flat_sel[0]['xyz']
+        flat_sel[1]['xyz_align'] = xyz2_trans
 
-        if self.opt.min_dist_mode:
-            gramian_f1, _ = gramian(feature1, feature1, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim)
-            pcl_diff_1 = kern_mat(xyz1, xyz1, self.dist_coef)
-            gramian_f2, _ = gramian(feature2, feature2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim)
-            pcl_diff_2 = kern_mat(xyz2_trans, xyz2_trans, self.dist_coef)
-
-        if self.opt.color_in_cost:
-            gramian_color, _ = gramian(img1, img2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
-            if self.opt.min_dist_mode:
-                gramian_c1, _ = gramian(img1, img1, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
-                gramian_c2, _ = gramian(img2, img2, norm_mode=norm_mode, kernalize=self.opt.kernalize, norm_dim=norm_dim )
-        
-        # print('now original')
-        # draw3DPts(xyz1, xyz2, img1, img2)
-        # print('now matched')
-        # draw3DPts(xyz1, xyz2_trans, img1, img2)
-        ######################################################################################################
-
-        ######################## inner product or distance of two functions ##################################
         if self.opt.diff_mode:
             if self.opt.source=='TUM':
                 ### 1. perturb the scenario points by moving them to the center first
@@ -391,269 +432,180 @@ class innerProdLoss(nn.Module):
                 pose1_2_noisy = torch.matmul(pose1_2, self.pose1_2_noise)
                 xyz2_trans_noisy = torch.matmul(pose1_2_noisy, xyz2_homo)[:, 0:3, :] # B*3*N
 
-            pcl_diff_exp_noisy = kern_mat(xyz1, xyz2_trans_noisy, self.dist_coef)
+            flat_sel[0]['xyz_noisy'] = flat_sel[0]['xyz']
+            flat_sel[1]['xyz_noisy'] = xyz2_trans_noisy  
 
-            ### 3. treat original points (without matching) as perturbation
-            # pcl_diff_exp_noisy = kern_mat(xyz1, xyz2, self.dist_coef)
+        return
 
-            if self.opt.color_in_cost:
-                if self.opt.opt_unet.weight_map_mode: ### use a weight layer
-                    inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
-                    inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w )
-                else:
-                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
-                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat * gramian_color )
-            else:
-                if self.opt.opt_unet.weight_map_mode:
-                    inner_neg_match = torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
-                    inner_neg_noisy = torch.sum(pcl_diff_exp_noisy * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
-                else:
-                    inner_neg_match = torch.mean(pcl_diff_exp * gramian_feat  )
-                    inner_neg_noisy = torch.mean(pcl_diff_exp_noisy * gramian_feat )
-
-            inner_neg = inner_neg_noisy / inner_neg_match
-
-            # print('now noisy')
-            # draw3DPts(xyz1, xyz2_trans_noisy, img1, img2)
+    def calc_gramian(self, flat_sel, item):
+        gramians = {}
+        if self.opt.min_dist_mode:
+            list_of_ij = [(0,0), (1,1), (0,1)]
         else:
-            if self.opt.color_in_cost:
-                if self.opt.min_dist_mode: 
-                # distance between functions
-                    if self.opt.opt_unet.weight_map_mode:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 * feature1_w.transpose(1, 2) * feature1_w ) + \
-                                    torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 * feature2_w.transpose(1, 2) * feature2_w ) - \
-                                    2*torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
-                    else:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * gramian_c1 ) + \
-                                    torch.sum(pcl_diff_2 * gramian_f2 * gramian_c2 ) - \
-                                    2*torch.sum(pcl_diff_exp * gramian_feat * gramian_color )
-                else:  
-                # negative inner product 
-                    if self.opt.opt_unet.weight_map_mode:
-                        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * gramian_color * feature1_w.transpose(1, 2) * feature2_w ) 
-                    else:
-                        inner_neg = - torch.mean(pcl_diff_exp * gramian_feat * gramian_color )
+            list_of_ij =[(0,1)]
+
+        if item == 'xyz_align' or item == 'xyz_noisy':
+            item_to_calc_gramian = item
+        elif item == 'img':
+            self.pre_gramian_img( flat_sel )
+            item_to_calc_gramian = 'hsv_graduv' # 'hsv'
+        elif item == 'feature':
+            self.pre_gramian_feature( flat_sel )
+            item_to_calc_gramian = 'feature_normalized'
+
+        for ij in list_of_ij:
+            (i, j) = ij
+            if item == 'feature' and (not self.opt.kernalize):
+                gramians[ij] = torch.matmul(flat_sel[i][item_to_calc_gramian].transpose(1,2), flat_sel[j][item_to_calc_gramian])
             else:
-                if self.opt.min_dist_mode:
-                # distance between functions
-                    if self.opt.opt_unet.weight_map_mode:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 * feature1_w.transpose(1, 2) * feature1_w ) + \
-                                    torch.sum(pcl_diff_2 * gramian_f2 * feature2_w.transpose(1, 2) * feature2_w ) - \
-                                    2*torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
-                    else:
-                        inner_neg = torch.sum(pcl_diff_1 * gramian_f1 ) + \
-                                    torch.sum(pcl_diff_2 * gramian_f2 ) - \
-                                    2*torch.sum(pcl_diff_exp * gramian_feat )
-                        # a_b = torch.sum(pcl_diff_exp * gramian_feat )
-                        # a_a = torch.sum(pcl_diff_1 * gramian_f1 )
-                        # b_b = torch.sum(pcl_diff_2 * gramian_f2 )
-                        # # print('a_b', a_b)
-                        # # print('a_a', a_a)
-                        # # print('b_b', b_b)
-                        # inner_neg = -a_b / \
-                        #     torch.sqrt(a_a * b_b )
-                else:
-                # negative inner product 
-                    if self.opt.opt_unet.weight_map_mode:
-                        inner_neg = - torch.sum(pcl_diff_exp * gramian_feat * feature1_w.transpose(1, 2) * feature2_w )
-                    else:
-                        inner_neg = - torch.mean(pcl_diff_exp * gramian_feat ) 
+                gramians[ij] = kern_mat( flat_sel[i][item_to_calc_gramian], flat_sel[j][item_to_calc_gramian], dist_coef=self.dist_coef[item] )
 
-        final_loss = inner_neg
-        ############################################################################################
+        if self.i_batch is not None and self.i_batch % 500 == 0:
+            self.print_stat_vec_and_gram(flat_sel, gramians, item_to_calc_gramian)
+        return gramians
 
-        ############################## penalty on feature norm #####################################
-        # sparsify mode 1 and 6 output norm=0
-        if self.opt.sparsify_mode == 5:
-            fea_norm_sum_to_loss = fea_norm_sum * 0
+    def print_stat_vec_and_gram(self, flat_sel, gramians, item):
+        for i in range(1):
+            print("Vec {} {}, max {}, min {}, mean {}, median {}".format(item, i, flat_sel[i][item].max(), flat_sel[i][item].min(), flat_sel[i][item].mean(), flat_sel[i][item].median() ) )
+
+        if self.opt.min_dist_mode:
+            list_of_ij = [(0,0), (0,1)]
         else:
-            fea_norm_sum_to_loss = fea_norm_sum * self.norm_scale
+            list_of_ij =[(0,1)]
+        for ij in list_of_ij:
+            print("Gramian {} {}, max {}, min {}, mean {}, median {}".format(item, ij, gramians[ij].max(), gramians[ij].min(), gramians[ij].mean(), gramians[ij].median() ) )
+        print(' ')
 
-        if not self.opt.opt_unet.weight_map_mode:
-            final_loss = final_loss + fea_norm_sum_to_loss
-        #############################################################################################
-        
-        if self.opt.opt_unet.pose_predict_mode: # obselete
-            xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
-            pcl_diff_exp_pred = kern_mat(xyz1, xyz2_trans_pred, self.dist_coef)
-            if self.opt.color_in_cost:
-                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat * gramian_color )
-            else:
-                inner_neg_pred = - torch.mean(pcl_diff_exp_pred * gramian_feat ) 
+    def calc_inner_prod(self, gramians, flat_sel):
+        """
+        Calculate function distance loss and cosine similarity by multiplying the gramians in all domains together for a specific pair
+        """
+        inner_prods = {}
+        if self.opt.min_dist_mode:
+            list_of_ij = [(0,0), (1,1), (0,1)]
+        else:
+            list_of_ij =[(0,1)]
 
-            final_loss = final_loss + inner_neg_pred
-            loss['CVO_pred'] = inner_neg_pred
-
-        loss['final'] = final_loss
-        loss['CVO'] = inner_neg
-        loss['norm'] = fea_norm_sum
-
-        return loss
-        
-
-    # def grad_img(self, img, direction):
-    #     if direction == 'u':
-    #         img_pad = self.u_pad(img)
-    #         grad = 
-    def forward(self, sample_batch, output): # img1 and img2 only for visualization
-        
-        img1 = sample_batch['image 1'] ## maybe should use image_raw
-        img2 = sample_batch['image 2']
-        depth1 = sample_batch['depth 1']
-        depth2 = sample_batch['depth 2']
-        pose1_2 = sample_batch['rela_pose']
-        # img1_raw = sample_batch['image 1 raw']
-        # img2_raw = sample_batch['image 2 raw']
-        # idep1 = sample_batch['idepth 1']
-        # idep2 = sample_batch['idepth 2']
-
-        feature1 = output[0]['feature']
-        feature2 = output[1]['feature']
-
-        inout_flat = {}
-        inout_flat[0] = {}
-        inout_flat[1] = {}
-
-        ### flatten depth and feature maps ahead of other operations to make pixel selection easier
-        batch_size = depth1.shape[0]
-        n_pts_1 = depth1.shape[2]*depth1.shape[3]
-        n_pts_2 = depth2.shape[2]*depth2.shape[3]
-
-        depth1_flat = depth1.reshape(-1, 1, n_pts_1) # B*1*N  # .expand(-1, 3, -1) # B*3*N
-        depth2_flat = depth2.reshape(-1, 1, n_pts_2) # B*1*N  # .expand(-1, 3, -1)
-
-        channels = feature1.shape[1]
-
-        fea_flat_1 = feature1.reshape(batch_size, channels, n_pts_1) # B*C*N1
-        fea_flat_2 = feature2.reshape(batch_size, channels, n_pts_2) # B*C*N2
-
-        img_flat_1 = img1.reshape(batch_size, 3, n_pts_1) # B*C*N1
-        img_flat_2 = img2.reshape(batch_size, 3, n_pts_2) # B*C*N2
-
-        inout_flat[0]['depth'] = depth1_flat
-        inout_flat[1]['depth'] = depth2_flat
-        inout_flat[0]['feature'] = fea_flat_1
-        inout_flat[1]['feature'] = fea_flat_2
-        inout_flat[0]['img'] = img_flat_1
-        inout_flat[1]['img'] = img_flat_2
-
-        if self.opt.opt_unet.weight_map_mode:
-            feature1_w = output[0]['feature_w']
-            feature2_w = output[1]['feature_w']
-            fea_w_flat_1 = feature1_w.reshape(batch_size, 1, n_pts_1)  # B*C*N1
-            fea_w_flat_2 = feature2_w.reshape(batch_size, 1, n_pts_2)  # B*C*N2
-            # fea_w_flat_1 = self.w_normalize( feature1_w.reshape(batch_size, 1, n_pts_1) ) # B*C*N1
-            # fea_w_flat_2 = self.w_normalize( feature2_w.reshape(batch_size, 1, n_pts_2) ) # B*C*N2
-            # fea_w_1 = fea_w_flat_1.reshape(batch_size, 1, feature1_w.shape[2], feature1_w.shape[3] )
-            # fea_w_2 = fea_w_flat_2.reshape(batch_size, 1, feature2_w.shape[2], feature2_w.shape[3] )
-            inout_flat[0]['feature_w'] = fea_w_flat_1
-            inout_flat[1]['feature_w'] = fea_w_flat_2
-
-        if self.opt.subset_in_loss:
-            feature1_norm = output[0]['feature_norm']
-            feature2_norm = output[1]['feature_norm']
-            feature1_norm_flat = feature1_norm.reshape(batch_size, 1, n_pts_1)
-            feature2_norm_flat = feature2_norm.reshape(batch_size, 1, n_pts_2)
-            inout_flat[0]['feature_norm'] = feature1_norm_flat
-            inout_flat[1]['feature_norm'] = feature2_norm_flat
+        for ij in list_of_ij:
+            gramian_list = [gramian[ij] for gramian in gramians.values() ]
+            n_gram = len(gramian_list)
             
-        if self.opt.diff_mode:
-            self.pose1_2_noise = gen_rand_pose(self.opt.source, self.noise_trans_scale, self.device)
-
-        ########################## calculate loss by going over each sample in the batch ##########################
-        ### Every sample should be processed separately because the selected pixels in each images are not the same.
-        ### However, the calc_loss function is still designed to process a mini-batch for better compatibility. Each
-        ### sample is augmented a dimension to pretend a mini-batch
-
-        losses = {}
-        losses['final'] = torch.tensor(0., device=self.device)
-        losses['CVO'] = torch.tensor(0., device=self.device)
-        losses['norm'] = torch.tensor(0., device=self.device)
-        losses['CVO_pred'] = torch.tensor(0., device=self.device)
-
-        if self.opt.subset_in_loss:
-            mask_feat_norm_1 = [None]*int(batch_size)
-            mask_feat_norm_2 = [None]*int(batch_size)
-
-        for i in range(batch_size):
-            flat_sel = {}
-            flat_sel[0] = self.selected(inout_flat, 0, i) #3*N
-            flat_sel[1] = self.selected(inout_flat, 1, i) #3*N  
+            # gramian_stack = torch.stack(gramian_list, dim=3)
             if self.opt.opt_unet.weight_map_mode:
-                flat_sel[0]['feature_w'] = self.w_normalize(flat_sel[0]['feature_w'])
-                flat_sel[1]['feature_w'] = self.w_normalize(flat_sel[1]['feature_w'])
-
-            if self.opt.subset_in_loss:
-                mask_feat_norm_1[i] = flat_sel[0]['mask_feat_norm']
-                mask_feat_norm_2[i] = flat_sel[1]['mask_feat_norm']
-
-            if not self.opt.no_inner_prod:
-                if not self.opt.opt_unet.pose_predict_mode:
-                    loss_single = self.calc_loss(flat_sel, pose1_2)
+                (i,j) = ij
+                # inner_prods[ij] = torch.sum(torch.prod(gramian_stack, dim=3) * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w'] )
+                if n_gram == 1:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w'] )
+                elif n_gram == 2:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w'] )
+                elif n_gram == 3:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] * gramian_list[2] * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w'] )
+                elif n_gram == 4:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] * gramian_list[2] * gramian_list[3] * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w'] )
                 else:
-                    pose1_2_pred = output['pose_pred'][i]
-                    loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
-                    losses['CVO_pred'] += loss_single['CVO_pred']
-                    
-                losses['final'] +=  loss_single['final']
-                losses['CVO'] +=  loss_single['CVO']
-                losses['norm'] +=  loss_single['norm']
+                    raise ValueError("The number of gramian: {} is unexpected".format(n_gram))
 
-        if self.opt.subset_in_loss:
-            mask_feat_norm_1_stack = torch.stack(mask_feat_norm_1, dim=0).reshape(batch_size, 1, depth1.shape[2], depth1.shape[3])
-            mask_feat_norm_2_stack = torch.stack(mask_feat_norm_2, dim=0).reshape(batch_size, 1, depth1.shape[2], depth1.shape[3])
-            output[0]['norm_mask'] = mask_feat_norm_1_stack
-            output[1]['norm_mask'] = mask_feat_norm_2_stack
-            
-        return losses, output
+            else:
+                # inner_prods[ij] = torch.sum(torch.prod(gramian_stack, dim=3) ) # or use mean? 
+                if n_gram == 1:
+                    inner_prods[ij] = torch.sum(gramian_list[0] )
+                elif n_gram == 2:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] )
+                elif n_gram == 3:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] * gramian_list[2]  )
+                elif n_gram == 4:
+                    inner_prods[ij] = torch.sum(gramian_list[0] * gramian_list[1] * gramian_list[2] * gramian_list[3] )
+                else:
+                    raise ValueError("The number of gramian: {} is unexpected".format(n_gram))
 
-            
-        #############################################
-        # xyz1, xyz2 = gen_3D_flat(self.yz1_grid, depth1_flat, depth2_flat)
+        return inner_prods
 
-        # return self.calc_loss(xyz1, xyz2, pose1_2, fea_flat_1, fea_flat_2, img_flat_1, img_flat_2, pose1_2_pred)
-
-
-    def selected(self, inout_flat, i, j):
-        ### i is 0 or 1 (camera 0 or 1), j is index in the mini-batch
-    # def selected(self, depth_flat_sample, fea_flat_sample, img_flat_sample, fea_w_flat_sample=None, fea_norm_flat_sample=None):
-        '''
-        Input is 1*N or 3*N
-        Output 1*C*N (keep the batch dimension)
-        '''
-        depth_flat_sample = inout_flat[i]['depth'][j]
-        fea_flat_sample = inout_flat[i]['feature'][j]
-        img_flat_sample = inout_flat[i]['img'][j]
-
-        flat_sel = {}
-
-        ############################# create mask ############################################
-        # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.opt.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.opt.height - 5)
-        mask = (depth_flat_sample.squeeze() > 0)
+    def calc_loss_from_inner_prod(self, inner_prods, flat_sel):
+        losses = {}
+        losses['inner_prod'] = inner_prods[(0,1)]
+        losses['inner_prod_0_0'] = inner_prods[(0,0)]
+        losses['inner_prod_1_1'] = inner_prods[(1,1)]
         
-        if self.opt.subset_in_loss:
-            fea_norm_flat_sample = inout_flat[i]['feature_norm'][j]
-            mask_feat_norm = fea_norm_flat_sample.squeeze() >= self.min_norm_thresh
-            mask = mask & mask_feat_norm
-            flat_sel['mask_feat_norm'] = mask_feat_norm.unsqueeze(0)
+        losses['feat_norm'] = flat_sel[0]['feature_norm_sum'] + flat_sel[1]['feature_norm_sum']
+        if self.opt.min_dist_mode:
+            losses['func_dist'] = inner_prods[(0,0)] + inner_prods[(1,1)] - 2 * inner_prods[(0,1)]
+            losses['cos_sim'] = 1 - inner_prods[(0,1)] / torch.sqrt( inner_prods[(0,0)] * inner_prods[(1,1)] )
 
-         ##############################################################################
+        # ############################## penalty on feature norm #####################################
+        # # sparsify mode 1 and 6 output norm=0
+        # if self.opt.sparsify_mode == 5:
+        #     fea_norm_sum_to_loss = fea_norm_sum * 0
+        # else:
+        #     fea_norm_sum_to_loss = fea_norm_sum * self.norm_scale
 
+        # if not self.opt.opt_unet.weight_map_mode:
+        #     final_loss = final_loss + fea_norm_sum_to_loss
+        # #############################################################################################
+        return losses
 
-        depth_flat_sample_selected = depth_flat_sample[:,mask]
-        fea_flat_sample_selected = fea_flat_sample[:,mask]
-        img_flat_sample_selected = img_flat_sample[:,mask]
-        flat_sel['depth'] = depth_flat_sample_selected.unsqueeze(0)
-        flat_sel['feature'] = fea_flat_sample_selected.unsqueeze(0)
-        flat_sel['img'] = img_flat_sample_selected.unsqueeze(0)
+    def pre_gramian_feature(self, flat_sel):
+        if self.opt.sparsify_mode == 1:
+            # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
+            self.norm_mode_for_feat_gram = True
+            self.norm_dim_for_feat_gram = 1
+        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
+            # normalize L1 norm of each channel, output L2 norm of each channel
+            self.norm_mode_for_feat_gram = True
+            self.norm_dim_for_feat_gram = 3
+        elif self.opt.sparsify_mode == 3:
+            # no normalization, output L1 norm of each channel
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 2
+        elif self.opt.sparsify_mode == 4:
+            # no normalization, output L2 norm of each pixel
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 1
+        elif self.opt.sparsify_mode == 6:
+            # no normalization, no norm output
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 0
 
-        yz1_grid_selected = self.yz1_grid[:,mask]
-        xyz_selected = yz1_grid_selected * depth_flat_sample_selected
-        flat_sel['xyz'] = xyz_selected.unsqueeze(0)
+        for i in range(2):
+            fea_flat = flat_sel[i]['feature']
+            flat_sel[i]['feature_normalized'] = flat_sel[i]['feature']
+            flat_sel[i]['feature_norm_sum'] = torch.tensor(0., dtype=fea_flat.dtype, device=fea_flat.device )
 
-        if self.opt.opt_unet.weight_map_mode:
-            fea_w_flat_sample = inout_flat[i]['feature_w'][j]
-            fea_w_flat_sample_selected = fea_w_flat_sample[:,mask]
-            flat_sel['feature_w'] = fea_w_flat_sample_selected.unsqueeze(0)
+            if self.norm_dim_for_feat_gram == 1 or self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
+                if self.norm_dim_for_feat_gram == 1:
+                    fea_norm = torch.norm(fea_flat, dim=1, keepdim=True) #L2 norm across channels # B*1*N
+                elif self.norm_dim_for_feat_gram == 2:
+                    fea_norm = torch.mean(torch.abs(fea_flat), dim=2, keepdim=True) # L1 norm across pixels # B*C*1
+                elif self.norm_dim_for_feat_gram == 3:
+                    fea_norm = torch.mean(torch.abs(fea_flat), dim=(1,2), keepdim=True) # L1 norm across pixels # B*1*1
+                flat_sel[i]['feature_norm'] = fea_norm
 
-        return flat_sel
+                fea_norm_sum = torch.mean(fea_norm)
+                if self.norm_mode_for_feat_gram == True:
+                    if self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
+                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_mean_per_chnl
+                        fea_norm_sum = torch.mean( torch.norm(flat_sel[i]['feature_normalized'], dim=2) )
+                    else:
+                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_norm_per_pxl
+
+                flat_sel[i]['feature_norm_sum'] = fea_norm_sum
+
+        return
+
+    def pre_gramian_img(self, flat_sel):
+        for i in range(2):
+            # print("rgb_flat, max {}, min {}, mean {}, median {}".format(flat_sel[i]['img'].max(), flat_sel[i]['img'].min(), flat_sel[i]['img'].mean(), flat_sel[i]['img'].median() ) )
+            hsv = rgb_to_hsv( flat_sel[i]['img'], flat=True )
+            # print("hsv, max {}, min {}, mean {}, median {}".format(hsv.max(), hsv.min(), hsv.mean(), hsv.median() ) )
+
+            # flat_sel[i]['hsv'] = hsv
+            flat_sel[i]['hsv_graduv'] = torch.cat((hsv, flat_sel[i]['grad_u'], flat_sel[i]['grad_v']), dim=1)
+        return
+
+    def output_feature_normalized(self, flat_sel, outputs):
+        for i in range(2):
+            if self.norm_mode_for_feat_gram and (self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3):
+                feat_norm = flat_sel[i]['feature_norm']
+                feat_norm = feat_norm.unsqueeze(3)
+                outputs[i]['feature_normalized'] = torch.div( outputs[i]['feature'], feat_norm ) * self.opt.feat_mean_per_chnl
+            else:
+                outputs[i]['feature_normalized'] = outputs[i]['feature'] ### Note: here it is not aligned with what's in pre_gramian_feature

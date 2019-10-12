@@ -6,6 +6,8 @@ from torch.autograd import Function
 import torch.nn.functional as F
 import torch.nn as nn
 
+import numpy as np
+
 class SubNormFunction(Function):
     @staticmethod
     def forward(ctx, x1, x2):
@@ -319,3 +321,76 @@ def rgb_to_hsv(image, flat=False):
         return torch.stack([h, s, v], dim=-3)
     else:
         return torch.stack([h, s, v], dim=-2)
+
+
+
+def gen_rand_pose(source, noise_trans_scale, device):
+    ### do not use np.random to generate random number because they can not be tracked by pytorch backend
+    # trans_noise = np.random.normal(scale=self.noise_trans_scale, size=(3,))
+    # rot_noise = np.random.normal(scale=3.0, size=(3,))
+    #####################################################################################################
+    trans_noise = torch.randn((3), dtype=torch.float, device=device) * noise_trans_scale
+    # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
+    rot_noise = torch.zeros(3, dtype=torch.float, device=device)
+    
+    if source=='CARLA':
+        noise_euler_tensor = torch.stack([ trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2] ]).unsqueeze(0)
+        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
+    elif source=='TUM':
+        noise_euler_tensor = torch.stack([trans_noise[0], trans_noise[1], trans_noise[2], rot_noise[0], rot_noise[1], rot_noise[2]]).unsqueeze(0)
+        pose1_2_noise = pose_from_euler_t_Tensor(noise_euler_tensor, device=device).squeeze(0)
+    pose1_2_noise.requires_grad = False
+
+    return pose1_2_noise
+
+def gen_noisy_pose(pose1_2_noise, mean_trans_2):
+    ##### move ot center, purturb, rotate back
+    device = mean_trans_2.device
+
+    trans = torch.tensor([0., 0., 0.], dtype=torch.float, device=device)
+
+    trans_rot = torch.stack([-mean_trans_2[0], -mean_trans_2[1], -mean_trans_2[2]])
+    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
+    trans_back = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
+    trans_back.requires_grad = False
+
+    trans_rot = torch.stack([mean_trans_2[0], mean_trans_2[1], mean_trans_2[2]])
+    trans_euler = torch.cat((trans_rot, trans), dim=0 ).unsqueeze(0)
+    trans_forth = pose_from_euler_t_Tensor(trans_euler, device=device).squeeze(0)
+    trans_forth.requires_grad = False
+
+    pose1_2_noisy = torch.matmul(trans_forth, torch.matmul(pose1_2_noise, trans_back) )
+    return pose1_2_noisy
+
+def gen_uvgrid(width, height, inv_K):
+    device = inv_K.device
+    u_grid = torch.tensor(np.arange(width), dtype=torch.float, device=device )
+    v_grid = torch.tensor(np.arange(height), dtype=torch.float, device=device )
+    uu_grid = u_grid.unsqueeze(0).expand((height, -1) ).reshape(-1)
+    vv_grid = v_grid.unsqueeze(1).expand((-1, width) ).reshape(-1)
+    uv1_grid = torch.stack( (uu_grid, vv_grid, torch.ones(uu_grid.size(), dtype=torch.float, device=device) ), dim=0 ) # 3*N, correspond to u,v,1
+    yz1_grid = torch.mm(inv_K, uv1_grid) # 3*N, corresponding to x,y,z
+    return uv1_grid, yz1_grid
+
+def gen_cam_K(source, width, height):
+    '''
+        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+        TUM xyz is right(u)-down(v)-front
+        Output is nparray
+    '''
+    assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
+    if source == 'CARLA':
+        fx=int(width/2)
+        fy=int(width/2)
+        cx=int(width/2)
+        cy=int(height/2)
+        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+    elif source == 'TUM':
+        #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
+        fx = width/640.0*525.0  # focal length x
+        fy = height/480.0*525.0  # focal length y
+        cx = width/640.0*319.5  # optical center x
+        cy = height/480.0*239.5  # optical center y
+        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+    return K

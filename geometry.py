@@ -89,7 +89,8 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         
         # pcl_diff = SubFunction.apply(pcl_1, pcl_2.contiguous()).to(torch.device('cuda'))
         # pcl_diff_exp = torch.exp(-torch.norm(pcl_diff, dim=1) * dist_coef  )
-        
+
+        # print(pcl_1.shape, pcl_2.shape)
         pcl_diff = SubNormFunction.apply(pcl_1.contiguous(), pcl_2.contiguous())
         assert not torch.isnan(pcl_diff).any()
         assert not torch.isinf(pcl_diff).any()
@@ -372,25 +373,25 @@ def gen_uvgrid(width, height, inv_K):
     yz1_grid = torch.mm(inv_K, uv1_grid) # 3*N, corresponding to x,y,z
     return uv1_grid, yz1_grid
 
-def gen_cam_K(source, width, height):
-    '''
-        CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
-        CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
-        TUM xyz is right(u)-down(v)-front
-        Output is nparray
-    '''
-    assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
-    if source == 'CARLA':
-        fx=int(width/2)
-        fy=int(width/2)
-        cx=int(width/2)
-        cy=int(height/2)
-        K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
-    elif source == 'TUM':
-        #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
-        fx = width/640.0*525.0  # focal length x
-        fy = height/480.0*525.0  # focal length y
-        cx = width/640.0*319.5  # optical center x
-        cy = height/480.0*239.5  # optical center y
-        K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
-    return K
+# def gen_cam_K(source, width, height):
+#     '''
+#         CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+#         CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+#         TUM xyz is right(u)-down(v)-front
+#         Output is nparray
+#     '''
+#     assert source == 'CARLA' or source == 'TUM', 'source unrecognized'
+#     if source == 'CARLA':
+#         fx=int(width/2)
+#         fy=int(width/2)
+#         cx=int(width/2)
+#         cy=int(height/2)
+#         K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+#     elif source == 'TUM':
+#         #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
+#         fx = width/640.0*525.0  # focal length x
+#         fy = height/480.0*525.0  # focal length y
+#         cx = width/640.0*319.5  # optical center x
+#         cy = height/480.0*239.5  # optical center y
+#         K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+#     return K

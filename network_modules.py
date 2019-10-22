@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 from geometry_plot import draw3DPts
 
-from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv, gen_rand_pose, gen_cam_K, gen_noisy_pose, gen_uvgrid
+from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv, gen_rand_pose, gen_noisy_pose, gen_uvgrid #, gen_cam_K
 
 from log import remove_edge
 
@@ -126,7 +126,8 @@ class UNetInnerProd(nn.Module):
             ## centralize feature
             feature_centered = feature - torch.mean(feature, dim=(2,3), keepdim=True)
             # ## manually zeroing edge part
-            remove_edge(feature_centered)
+            if self.opt_loss.zero_edge_region:
+                remove_edge(feature_centered)
             ## normalize the max of feature norm of any pixel to 1
             feature_norm = torch.norm(feature_centered, dim=1, keepdim=True)
             feature_norm = feature_norm / torch.max(feature_norm)
@@ -141,6 +142,8 @@ class UNetInnerProd(nn.Module):
                 outputs[i]['feature'] = feature_pca
             else:
                 outputs[i]['feature'] = feature_centered # feature or feature_centered? 
+            outputs[i]['feature_normalized'] = torch.zeros_like(outputs[i]['feature'])
+            
         return outputs
 
 
@@ -156,13 +159,14 @@ class innerProdLoss(nn.Module):
         self.opt = opt_loss
         self.options_from_source()
 
-        ## Intrinsic matrix
-        self.K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
-        inv_K = torch.tensor(np.linalg.inv(self.K), dtype=torch.float).to(self.device)
-        self.K = torch.tensor(self.K).to(self.device)
+        # ## Intrinsic matrix
+        # self.K = gen_cam_K(self.opt.source, self.opt.width, self.opt.height)
+        # inv_K = torch.tensor(np.linalg.inv(self.K), dtype=torch.float).to(self.device)
+        # self.K = torch.tensor(self.K).to(self.device)
 
-        ## For generating point cloud
-        self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+        # ## For generating point cloud
+        # self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+        self.gen_cam_K_and_grid()
         
         ## For selecting pixels according to the norm of the feature vector, when self.opt.subset_in_loss is True
         self.min_norm_thresh = 0
@@ -179,6 +183,61 @@ class innerProdLoss(nn.Module):
         ## For setting the initial dist_coef (scale)
         self.dist_coef = self.opt.dist_coef
         
+    def gen_cam_K_and_grid(self):
+        '''
+            CARLA and TUM have differenct definition of relation between xyz coordinate and uv coordinate.
+            CARLA xyz is front-right(u)-down(v)(originally up, which is left handed, fixed to down in pose_from_euler_t function)
+            TUM xyz is right(u)-down(v)-front
+            Output is nparray
+        '''
+        assert self.opt.source == 'CARLA' or self.opt.source == 'TUM', 'source unrecognized'
+        if self.opt.source == 'CARLA':
+            fx=int(self.opt.width/2)
+            fy=int(self.opt.width/2)
+            cx=int(self.opt.width/2)
+            cy=int(self.opt.height/2)
+
+            K = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+            inv_K = torch.tensor(np.linalg.inv(K), dtype=torch.float).to(self.device)
+            self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+
+        elif self.opt.source == 'TUM':
+            #### see: https://vision.in.tum.de/data/datasets/rgbd-dataset/file_formats
+            fx = self.opt.width/640.0*525.0  # focal length x
+            fy = self.opt.height/480.0*525.0  # focal length y
+            cx = self.opt.width/640.0*319.5  # optical center x
+            cy = self.opt.height/480.0*239.5  # optical center y
+
+            if self.opt.keep_scale_consistent and (not self.opt.run_eval):
+                num_width = self.opt.width_split
+                num_height = self.opt.height_split
+                new_h = self.opt.effective_height
+                new_w = self.opt.effective_width
+                K = {}
+                inv_K = {}
+                self.uv1_grid_dict = {}
+                self.yz1_grid_dict = {}
+
+                K_ = np.array([ [cx, fx, 0], [cy, 0, fy], [1, 0, 0] ]) 
+                inv_K_ = torch.tensor(np.linalg.inv(K_), dtype=torch.float).to(self.device)
+                self.uv1_grid_dict['original'], self.yz1_grid_dict['original'] = gen_uvgrid(self.opt.width, self.opt.height, inv_K_)
+
+                for i in range(num_height):
+                    for j in range(num_width):
+                        start_h = i * new_h
+                        start_w = j * new_w
+                        cx_cur = cx - start_w
+                        cy_cur = cy - start_h
+                        K[(i,j)] = np.array([ [fx, 0, cx_cur], [0, fy, cy_cur], [0, 0, 1] ])
+                        inv_K[(i,j)] = torch.tensor(np.linalg.inv( K[(i,j)] ), dtype=torch.float).to(self.device)
+                        self.uv1_grid_dict[(i,j)], self.yz1_grid_dict[(i,j)] = gen_uvgrid(new_w, new_h, inv_K[(i,j)] )
+            else:
+                K = np.array([ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]) 
+                inv_K = torch.tensor(np.linalg.inv(K), dtype=torch.float).to(self.device)
+                self.uv1_grid, self.yz1_grid = gen_uvgrid(self.opt.width, self.opt.height, inv_K)
+
+        return 
+
 
     def options_from_source(self):
         '''
@@ -226,6 +285,13 @@ class innerProdLoss(nn.Module):
         self.i_batch = i_batch
         pose1_2 = inputs['rela_pose']
 
+        if self.opt.keep_scale_consistent and (not self.opt.run_eval):
+            if self.opt.eval_full_size:
+                self.yz1_grid = self.yz1_grid_dict['original']
+            else:
+                ij = ( int(inputs['ij'][0]), int(inputs['ij'][1]) )
+                self.yz1_grid = self.yz1_grid_dict[ ij ]
+
         self.gen_mask(inputs, outputs)
         self.gen_grad_map(inputs, outputs)
 
@@ -240,12 +306,22 @@ class innerProdLoss(nn.Module):
         ### sample is augmented a dimension to pretend a mini-batch
 
         losses = {}
+        losses['final'] = torch.tensor(0., device=self.device)
         batch_size = inputs[0]['img'].shape[0]
 
+        valid_single_loss = False
         for i in range(batch_size):
             flat_sel = {} # a single data (pair) to be fed to masking and calculating loss 
             flat_sel[0] = self.selected(inout_flat, 0, i) #3*N
             flat_sel[1] = self.selected(inout_flat, 1, i) #3*N  
+
+            if flat_sel[0]['xyz'].shape[-1] == 0 or flat_sel[1]['xyz'].shape[-1] == 0:
+                continue
+
+            ### Post process after selection
+            self.normalize_feature_after_sel(flat_sel)
+            ## Put the feature_normalized in fea_flat to output
+            self.output_feature_normalized(flat_sel, outputs, i)
 
             if not self.opt.no_inner_prod:
                 if not self.opt.opt_unet.pose_predict_mode:
@@ -256,19 +332,17 @@ class innerProdLoss(nn.Module):
                 # else:
                 #     pose1_2_pred = outputs['pose_pred'][i]
                 #     loss_single = self.calc_loss(flat_sel, pose1_2, pose1_2_pred=pose1_2_pred)
-                #     losses['CVO_pred'] += loss_single['CVO_pred']
-                    
-                ## Put the feature_normalized in fea_flat to output
-                self.output_feature_normalized(flat_sel, outputs)
+                #     losses['CVO_pred'] += loss_single['CVO_pred']    
 
                 for item in loss_single:
                     if i == 0:
                         losses[item] = torch.tensor(0., device=self.device)
                     losses[item] += loss_single[item]
+                valid_single_loss = True
         
-        losses['final'] = torch.tensor(0., device=self.device)
-        for i in range(len(self.opt.loss_item)):
-            losses['final'] += losses[self.opt.loss_item[i]] * self.opt.loss_weight[i]
+        if valid_single_loss:
+            for i in range(len(self.opt.loss_item)):
+                losses['final'] += losses[self.opt.loss_item[i]] * self.opt.loss_weight[i]
             
         return losses, outputs
 
@@ -295,7 +369,8 @@ class innerProdLoss(nn.Module):
     def gen_mask(self, inputs, outputs):
         for i in range(2):
             outputs[i]['mask'] = inputs[i]['depth'] > 0
-            remove_edge(outputs[i]['mask'], byte_mode=True)
+            if self.opt.zero_edge_region:
+                remove_edge(outputs[i]['mask'], byte_mode=True)
             # mask = (depth_flat_sample.squeeze() > 0) & (self.uv1_grid[0] > 4) & (self.uv1_grid[0] < self.opt.width - 5) & (self.uv1_grid[1] > 4) & (self.uv1_grid[1] < self.opt.height - 5)
             if self.opt.subset_in_loss:
                 outputs[i]['norm_mask'] = outputs[i]['feature_norm'] >= self.min_norm_thresh
@@ -354,7 +429,65 @@ class innerProdLoss(nn.Module):
 
         return flat_sel
 
+    def normalize_feature_after_sel(self, flat_sel):
+        if self.opt.sparsify_mode == 1:
+            # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
+            self.norm_mode_for_feat_gram = True
+            self.norm_dim_for_feat_gram = 1
+        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
+            # normalize L1 norm of each channel, output L2 norm of each channel
+            self.norm_mode_for_feat_gram = True
+            self.norm_dim_for_feat_gram = 3
+        elif self.opt.sparsify_mode == 3:
+            # no normalization, output L1 norm of each channel
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 2
+        elif self.opt.sparsify_mode == 4:
+            # no normalization, output L2 norm of each pixel
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 1
+        elif self.opt.sparsify_mode == 6:
+            # no normalization, no norm output
+            self.norm_mode_for_feat_gram = False
+            self.norm_dim_for_feat_gram = 0
+
+        for i in range(2):
+            fea_flat = flat_sel[i]['feature']
+            flat_sel[i]['feature_normalized'] = flat_sel[i]['feature']
+            flat_sel[i]['feature_norm_sum'] = torch.tensor(0., dtype=fea_flat.dtype, device=fea_flat.device )
+
+            if self.norm_dim_for_feat_gram == 1 or self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
+                if self.norm_dim_for_feat_gram == 1:
+                    fea_norm = torch.norm(fea_flat, dim=1, keepdim=True) #L2 norm across channels # B*1*N
+                elif self.norm_dim_for_feat_gram == 2:
+                    fea_norm = torch.mean(torch.abs(fea_flat), dim=2, keepdim=True) # L1 norm across pixels # B*C*1
+                elif self.norm_dim_for_feat_gram == 3:
+                    fea_norm = torch.mean(torch.abs(fea_flat), dim=(1,2), keepdim=True) # L1 norm across pixels # B*1*1
+                flat_sel[i]['feature_norm'] = fea_norm
+
+                fea_norm_sum = torch.mean(fea_norm)
+                if self.norm_mode_for_feat_gram == True:
+                    if self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
+                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_mean_per_chnl
+                        fea_norm_sum = torch.mean( torch.norm(flat_sel[i]['feature_normalized'], dim=2) )
+                    else:
+                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_norm_per_pxl
+
+                flat_sel[i]['feature_norm_sum'] = fea_norm_sum
+
+        return
     
+    def output_feature_normalized(self, flat_sel, outputs, idx_in_batch):
+        for i in range(2):
+            if self.norm_mode_for_feat_gram and (self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3):
+                feat_norm = flat_sel[i]['feature_norm']
+                feat_norm = feat_norm.unsqueeze(3)
+                outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = torch.div( outputs[i]['feature'][idx_in_batch:idx_in_batch+1], feat_norm ) * self.opt.feat_mean_per_chnl
+            else:
+                outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = outputs[i]['feature'][idx_in_batch:idx_in_batch+1] ### Note: here it is not aligned with what's in normalize_feature_after_sel
+
+        return
+
     def calc_loss(self, flat_sel, pose1_2, pose1_2_pred=None):
         '''
         Input points are flat
@@ -363,7 +496,7 @@ class innerProdLoss(nn.Module):
         self.xyz_align_with_pose(flat_sel, pose1_2)
 
         gramians = {}
-        item_to_calc_gram = ['feature', 'xyz_align']
+        item_to_calc_gram = ['xyz_align', 'feature' ]
         if self.opt.color_in_cost:
             item_to_calc_gram.append('img')
 
@@ -390,10 +523,6 @@ class innerProdLoss(nn.Module):
 
             return losses, losses_noisy
             
-        # print('now original')
-        # draw3DPts(xyz1, xyz2, img1, img2)
-        # print('now matched')
-        # draw3DPts(xyz1, xyz2_trans, img1, img2)
         
         # if self.opt.opt_unet.pose_predict_mode: # obselete
         #     xyz2_trans_pred = torch.matmul(pose1_2_pred, xyz2_homo)[:, 0:3, :] # B*3*N
@@ -434,7 +563,11 @@ class innerProdLoss(nn.Module):
 
             flat_sel[0]['xyz_noisy'] = flat_sel[0]['xyz']
             flat_sel[1]['xyz_noisy'] = xyz2_trans_noisy  
-
+        
+        # print('now original')
+        # draw3DPts(xyz1, xyz2, flat_sel[0]['img'], flat_sel[1]['img'])
+        # print('now matched')
+        # draw3DPts(xyz1, xyz2_trans, flat_sel[0]['img'], flat_sel[1]['img'])
         return
 
     def calc_gramian(self, flat_sel, item):
@@ -450,7 +583,6 @@ class innerProdLoss(nn.Module):
             self.pre_gramian_img( flat_sel )
             item_to_calc_gramian = 'hsv_graduv' # 'hsv'
         elif item == 'feature':
-            self.pre_gramian_feature( flat_sel )
             item_to_calc_gramian = 'feature_normalized'
 
         for ij in list_of_ij:
@@ -518,6 +650,11 @@ class innerProdLoss(nn.Module):
                 else:
                     raise ValueError("The number of gramian: {} is unexpected".format(n_gram))
 
+            if self.opt.normalize_inprod_over_pts:
+                ni_nj = gramian_list[0].shape[1] * gramian_list[0].shape[2]
+                # print('ni_nj', ni_nj)
+                inner_prods[ij] = inner_prods[ij] / ni_nj
+
         return inner_prods
 
     def calc_loss_from_inner_prod(self, inner_prods, flat_sel):
@@ -543,54 +680,6 @@ class innerProdLoss(nn.Module):
         # #############################################################################################
         return losses
 
-    def pre_gramian_feature(self, flat_sel):
-        if self.opt.sparsify_mode == 1:
-            # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
-            self.norm_mode_for_feat_gram = True
-            self.norm_dim_for_feat_gram = 1
-        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
-            # normalize L1 norm of each channel, output L2 norm of each channel
-            self.norm_mode_for_feat_gram = True
-            self.norm_dim_for_feat_gram = 3
-        elif self.opt.sparsify_mode == 3:
-            # no normalization, output L1 norm of each channel
-            self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 2
-        elif self.opt.sparsify_mode == 4:
-            # no normalization, output L2 norm of each pixel
-            self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 1
-        elif self.opt.sparsify_mode == 6:
-            # no normalization, no norm output
-            self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 0
-
-        for i in range(2):
-            fea_flat = flat_sel[i]['feature']
-            flat_sel[i]['feature_normalized'] = flat_sel[i]['feature']
-            flat_sel[i]['feature_norm_sum'] = torch.tensor(0., dtype=fea_flat.dtype, device=fea_flat.device )
-
-            if self.norm_dim_for_feat_gram == 1 or self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
-                if self.norm_dim_for_feat_gram == 1:
-                    fea_norm = torch.norm(fea_flat, dim=1, keepdim=True) #L2 norm across channels # B*1*N
-                elif self.norm_dim_for_feat_gram == 2:
-                    fea_norm = torch.mean(torch.abs(fea_flat), dim=2, keepdim=True) # L1 norm across pixels # B*C*1
-                elif self.norm_dim_for_feat_gram == 3:
-                    fea_norm = torch.mean(torch.abs(fea_flat), dim=(1,2), keepdim=True) # L1 norm across pixels # B*1*1
-                flat_sel[i]['feature_norm'] = fea_norm
-
-                fea_norm_sum = torch.mean(fea_norm)
-                if self.norm_mode_for_feat_gram == True:
-                    if self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
-                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_mean_per_chnl
-                        fea_norm_sum = torch.mean( torch.norm(flat_sel[i]['feature_normalized'], dim=2) )
-                    else:
-                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_norm_per_pxl
-
-                flat_sel[i]['feature_norm_sum'] = fea_norm_sum
-
-        return
-
     def pre_gramian_img(self, flat_sel):
         for i in range(2):
             # print("rgb_flat, max {}, min {}, mean {}, median {}".format(flat_sel[i]['img'].max(), flat_sel[i]['img'].min(), flat_sel[i]['img'].mean(), flat_sel[i]['img'].median() ) )
@@ -600,12 +689,3 @@ class innerProdLoss(nn.Module):
             # flat_sel[i]['hsv'] = hsv
             flat_sel[i]['hsv_graduv'] = torch.cat((hsv, flat_sel[i]['grad_u'], flat_sel[i]['grad_v']), dim=1)
         return
-
-    def output_feature_normalized(self, flat_sel, outputs):
-        for i in range(2):
-            if self.norm_mode_for_feat_gram and (self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3):
-                feat_norm = flat_sel[i]['feature_norm']
-                feat_norm = feat_norm.unsqueeze(3)
-                outputs[i]['feature_normalized'] = torch.div( outputs[i]['feature'], feat_norm ) * self.opt.feat_mean_per_chnl
-            else:
-                outputs[i]['feature_normalized'] = outputs[i]['feature'] ### Note: here it is not aligned with what's in pre_gramian_feature

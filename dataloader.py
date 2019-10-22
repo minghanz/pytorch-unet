@@ -11,6 +11,8 @@ from torchvision import transforms, utils
 import glob
 import os
 import math
+import copy
+import random
 
 def skewmat_from_w(w):
     '''
@@ -448,6 +450,51 @@ def load_from_TUM(folders, simple_mode=False):
 
     return pair_seq
 
+class RotateOrNot(object):
+    """Rotate 180 degree randomly"""
+    def __init__(self, device):
+        self.rot180matrix = torch.eye(4).to(device)
+        self.rot180matrix[0,0] = -1
+        self.rot180matrix[1,1] = -1
+
+    def __call__(self, sample):
+        ## https://stackoverflow.com/questions/6824681/get-a-random-boolean-in-python
+        rotate_flag = bool( random.getrandbits(1) )
+
+        items_to_rotate = ['img', 'img_raw', 'depth', 'idepth', 'gray']
+        if rotate_flag:
+            for i in range(2):
+                for item in items_to_rotate:
+                    sample[i][item] = torch.flip(sample[i][item], dims=[1,2])
+            sample['rela_pose'] = torch.matmul(self.rot180matrix, torch.matmul(sample['rela_pose'], self.rot180matrix) )
+            #TODO: transform sample['rela_euler'] 
+                
+        return sample
+
+class SplitBlocks(object):
+    """Split the whole image into tiles, each forming an input to the network"""
+    def __init__(self, heightwise_num, widthwise_num, effective_h, effective_w):
+        self.heightwise_num = heightwise_num
+        self.widthwise_num = widthwise_num
+        self.effective_h = effective_h
+        self.effective_w = effective_w
+
+    def __call__(self, sample):
+        samp_split = {}
+        samp_split['original'] = copy.deepcopy(sample)
+        items_to_split = ['img', 'img_raw', 'depth', 'idepth', 'gray']
+        for i in range(self.heightwise_num):
+            for j in range(self.widthwise_num):
+                samp_split[ (i,j) ] = copy.deepcopy(sample)
+                samp_split[ (i,j) ]['ij'] = (i,j)
+                h_start = i * self.effective_h
+                w_start = j * self.effective_w
+                for k in range(2):
+                    for item in items_to_split:
+                        samp_split[(i,j)][k][item] = sample[k][item][:, h_start:h_start+self.effective_h, w_start:w_start+self.effective_w]
+
+        return samp_split
+
 class ToTensor(object):
     """Convert ndarrays in sample to Tensors."""
 
@@ -455,50 +502,26 @@ class ToTensor(object):
         self.device = device
 
     def __call__(self, sample):
-        image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
-        image_1_raw, image_2_raw = sample['image 1 raw'], sample['image 2 raw']
-        gray_1, gray_2 = sample['gray 1'], sample['gray 2']
-        # swap color axis because
-        # numpy image: H x W x C
-        # torch image: C X H X W
-        image_1 = image_1.transpose((2, 0, 1))
-        image_2 = image_2.transpose((2, 0, 1))
-        gray_1 = gray_1.transpose((2, 0, 1))
-        gray_2 = gray_2.transpose((2, 0, 1))
-        depth_1 = depth_1.transpose((2, 0, 1))
-        depth_2 = depth_2.transpose((2, 0, 1))
-        idepth_1 = idepth_1.transpose((2, 0, 1))
-        idepth_2 = idepth_2.transpose((2, 0, 1))
+        # # swap color axis because
+        # # numpy image: H x W x C
+        # # torch image: C X H X W
+        items_to_transpose = ['img', 'img_raw', 'depth', 'idepth', 'gray']
+        for i in range(2):
+            for item in items_to_transpose:
+                trpsed = sample[i][item].transpose( (2, 0, 1) )
+                if self.device is None:
+                    sample[i][item] = torch.from_numpy(trpsed)
+                else:
+                    sample[i][item] = torch.from_numpy(trpsed).to(self.device, dtype=torch.float)
 
-        image_1_raw = image_1_raw.transpose((2, 0, 1))
-        image_2_raw = image_2_raw.transpose((2, 0, 1))
-        
-        if self.device is None:
-            return {'image 1': torch.from_numpy(image_1),
-                    'image 2': torch.from_numpy(image_2),
-                    'image 1 raw': torch.from_numpy(image_1_raw),
-                    'image 2 raw': torch.from_numpy(image_2_raw),
-                    'gray 1': torch.from_numpy(gray_1),
-                    'gray 2': torch.from_numpy(gray_2),
-                    'depth 1': torch.from_numpy(depth_1),
-                    'depth 2': torch.from_numpy(depth_2),
-                    'idepth 1': torch.from_numpy(idepth_1),
-                    'idepth 2': torch.from_numpy(idepth_2),
-                    'rela_pose': torch.from_numpy(sample['rela_pose']),
-                    'rela_euler': torch.from_numpy(sample['rela_euler']), 'imgname 1': sample['imgname 1']}
-        else:
-            return {'image 1': torch.from_numpy(image_1).to(self.device, dtype=torch.float),
-                    'image 2': torch.from_numpy(image_2).to(self.device, dtype=torch.float),
-                    'image 1 raw': torch.from_numpy(image_1_raw).to(self.device, dtype=torch.float),
-                    'image 2 raw': torch.from_numpy(image_2_raw).to(self.device, dtype=torch.float),
-                    'gray 1': torch.from_numpy(gray_1).to(self.device, dtype=torch.float),
-                    'gray 2': torch.from_numpy(gray_2).to(self.device, dtype=torch.float),
-                    'depth 1': torch.from_numpy(depth_1).to(self.device, dtype=torch.float),
-                    'depth 2': torch.from_numpy(depth_2).to(self.device, dtype=torch.float),
-                    'idepth 1': torch.from_numpy(idepth_1).to(self.device, dtype=torch.float),
-                    'idepth 2': torch.from_numpy(idepth_2).to(self.device, dtype=torch.float),
-                    'rela_pose': torch.from_numpy(sample['rela_pose']).to(self.device, dtype=torch.float),
-                    'rela_euler': torch.from_numpy(sample['rela_euler']).to(self.device, dtype=torch.float), 'imgname 1': sample['imgname 1']}
+        item_to_tensor = ['rela_pose', 'rela_euler']
+        for item in item_to_tensor:
+            if self.device is None:
+                sample[item] = torch.from_numpy(sample[item])
+            else:
+                sample[item] = torch.from_numpy(sample[item]).to(self.device, dtype=torch.float)
+
+        return sample
 
 class Rescale(object):
     """Rescale the image in a sample to a given size.
@@ -515,8 +538,7 @@ class Rescale(object):
         self.post_fn = post_fn
 
     def __call__(self, sample):
-        image_1, image_2, depth_1, depth_2, idepth_1, idepth_2 = sample['image 1'], sample['image 2'], sample['depth 1'], sample['depth 2'], sample['idepth 1'], sample['idepth 2']
-        gray_1, gray_2 = sample['gray 1'], sample['gray 2']
+        image_1 = sample[0]['img']
         h, w = image_1.shape[:2]
 
         if isinstance(self.output_size, int):
@@ -531,46 +553,23 @@ class Rescale(object):
 
         new_h, new_w = int(new_h), int(new_w)
 
-        image_1 = skimage.transform.resize(image_1, (new_h, new_w) )
-        image_2 = skimage.transform.resize(image_2, (new_h, new_w) )
-        gray_1 = skimage.transform.resize(gray_1, (new_h, new_w) )
-        gray_2 = skimage.transform.resize(gray_2, (new_h, new_w) )
-        ### different scaling strategy for depth to avoid averaging with zeros to create arrow-like scattered points
-        depth_1 = skimage.transform.resize(depth_1, (new_h, new_w), order=0,anti_aliasing=False ) 
-        depth_2 = skimage.transform.resize(depth_2, (new_h, new_w), order=0,anti_aliasing=False )
-        idepth_1 = skimage.transform.resize(idepth_1, (new_h, new_w) )
-        idepth_2 = skimage.transform.resize(idepth_2, (new_h, new_w) )
+        items_to_rescale = ['img', 'depth', 'idepth', 'gray']
+        items_destination = ['img_raw', 'depth', 'idepth', 'gray']
+        for i in range(2):
+            for j in range(len(items_to_rescale)):
+                mat = sample[i][ items_to_rescale[j] ]
+                if items_to_rescale[j] == 'depth':
+                    mat = skimage.transform.resize(mat, (new_h, new_w), order=0,anti_aliasing=False )
+                else:
+                    mat = skimage.transform.resize(mat, (new_h, new_w) )
+                sample[i][ items_destination[j] ] = mat
+            
+            if self.post_fn is not None:
+                sample[i]['img'] = self.post_fn( sample[i][ 'img_raw' ] )
+            else:
+                sample[i]['img'] = sample[i][ 'img_raw' ]
 
-        if self.post_fn is not None:
-            image_1_processed = self.post_fn(image_1)
-            image_2_processed = self.post_fn(image_2)
-
-            return {'image 1': image_1_processed,
-                    'image 2': image_2_processed,
-                    'image 1 raw': image_1,
-                    'image 2 raw': image_2,
-                    'gray 1': gray_1,
-                    'gray 2': gray_2,
-                    'depth 1': depth_1,
-                    'depth 2': depth_2,
-                    'idepth 1': idepth_1,
-                    'idepth 2': idepth_2,
-                    'rela_pose': sample['rela_pose'], 
-                    'rela_euler': sample['rela_euler'], 'imgname 1': sample['imgname 1']}
-        else:
-            return {'image 1': image_1,
-                    'image 2': image_2,
-                    'image 1 raw': image_1,
-                    'image 2 raw': image_2,
-                    'gray 1': gray_1,
-                    'gray 2': gray_2,
-                    'depth 1': depth_1,
-                    'depth 2': depth_2,
-                    'idepth 1': idepth_1,
-                    'idepth 2': idepth_2,
-                    'rela_pose': sample['rela_pose'], 
-                    'rela_euler': sample['rela_euler'], 'imgname 1': sample['imgname 1']}
-        
+        return sample
 
 
 
@@ -616,8 +615,13 @@ class ImgPoseDataset(Dataset):
         img_name1 = self.pair_seq[idx]['image_path 1'].split('/')[-1][:-4]
 
         # sample = {'image 1': image_1, 'image 2': image_2, 'depth 1': depth_1, 'depth 2': depth_2, 'rela_pose': rela_pose}
-        sample = {'image 1': image_1, 'image 2': image_2, 'gray 1': gray_1, 'gray 2': gray_2, 'depth 1': depth_1, 'depth 2': depth_2, 'idepth 1': idepth_1, 'idepth 2': idepth_2, 
-                    'rela_pose': rela_pose, 'rela_euler': rela_euler, 'imgname 1': img_name1}
+        sample = {}
+        sample[0] = {}
+        sample[1] = {}
+        sample[0].update({'img': image_1, 'gray': gray_1, 'depth': depth_1, 'idepth': idepth_1})
+        sample[1].update({'img': image_2, 'gray': gray_2, 'depth': depth_2, 'idepth': idepth_2})
+
+        sample.update({'rela_pose': rela_pose, 'rela_euler': rela_euler, 'imgname 1': img_name1})
     
         if self.transform:
             sample = self.transform(sample)
@@ -628,11 +632,11 @@ def main():
     dataset = ImgPoseDataset(transform=ToTensor(), root_dir = '/mnt/storage/minghanz_data/TUM/RGBD') # root_dir = '/mnt/storage/minghanz_data/TUM/RGBD'
     
     a = dataset[0]
-    depth2 = a['depth 2'].numpy()
+    depth2 = a[1]['depth'].numpy()
     depth2 = np.squeeze(depth2)
     plt.figure()
     plt.imshow(depth2 )
-    image2 = a['image 2'].numpy()
+    image2 = a[1]['img'].numpy()
     image2 = image2.transpose(1,2,0)
     plt.figure()
     plt.imshow(image2)  #.reshape(height, width, channel)

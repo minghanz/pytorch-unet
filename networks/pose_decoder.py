@@ -56,7 +56,7 @@ class PoseDecoder(nn.Module):
         out = 0.01 * out.view(-1, self.num_frames_to_predict_for, 1, 6)
 
 
-        print("out.shape", out.shape)
+        # print("out.shape", out.shape)
 
         # axisangle = out[..., :3]
         # translation = out[..., 3:]

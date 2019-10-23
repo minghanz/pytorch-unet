@@ -11,6 +11,8 @@ from geometry_plot import draw3DPts
 from geometry import kern_mat, gramian, gen_3D, gen_3D_flat, rgb_to_hsv, gen_rand_pose, gen_noisy_pose, gen_uvgrid #, gen_cam_K
 
 from log import remove_edge
+from gaussian_smooth import GaussianSmoothing
+import torch.nn.functional as F
 
 # from fastai.vision import *
 # from torchvision import models
@@ -208,7 +210,7 @@ class innerProdLoss(nn.Module):
             cx = self.opt.width/640.0*319.5  # optical center x
             cy = self.opt.height/480.0*239.5  # optical center y
 
-            if self.opt.keep_scale_consistent and (not self.opt.run_eval):
+            if self.opt.keep_scale_consistent and (not (self.opt.run_eval or self.opt.trial_mode) ):
                 num_width = self.opt.width_split
                 num_height = self.opt.height_split
                 new_h = self.opt.effective_height
@@ -285,7 +287,7 @@ class innerProdLoss(nn.Module):
         self.i_batch = i_batch
         pose1_2 = inputs['rela_pose']
 
-        if self.opt.keep_scale_consistent and (not self.opt.run_eval):
+        if self.opt.keep_scale_consistent and (not (self.opt.run_eval or self.opt.trial_mode) ):
             if self.opt.eval_full_size:
                 self.yz1_grid = self.yz1_grid_dict['original']
             else:
@@ -689,3 +691,112 @@ class innerProdLoss(nn.Module):
             # flat_sel[i]['hsv'] = hsv
             flat_sel[i]['hsv_graduv'] = torch.cat((hsv, flat_sel[i]['grad_u'], flat_sel[i]['grad_v']), dim=1)
         return
+
+    def simple_cvo(self, inputs, visualize=False):        
+        pose1_2 = inputs['rela_pose']
+        kern_size = 5
+        sigma = int(kern_size/2)
+        smoothing = GaussianSmoothing(1, kern_size, sigma).to(self.device)
+        for i in range(2):
+            ### mask invalid pixels
+            inputs[i]['mask'] = inputs[i]['depth'] > 0
+            
+            inputs[i]['depth_smooth'] = smoothing(inputs[i]['depth'], padding=True)
+
+            noise_tensor = torch.normal(mean=0, std=1, size=inputs[i]['depth'].shape ).to(self.device)
+            noise_tensor = smoothing(noise_tensor, padding=True)
+            noise_tensor = smoothing(noise_tensor, padding=True)
+            noise_tensor = smoothing(noise_tensor, padding=True)
+            inputs[i]['depth_noisy'] = inputs[i]['depth_smooth'] + noise_tensor
+
+        ### flatten
+        inout_flat = {}
+        inout_flat[0] = {}
+        inout_flat[1] = {}
+        items_to_be_reshaped = ['depth', 'img', 'mask', 'depth_smooth', 'depth_noisy']
+        for i in range(2):
+            for item in items_to_be_reshaped:
+                if item in inputs[i]:
+                    inout_flat[i][item] = inputs[i][item].reshape(inputs[i][item].shape[0], inputs[i][item].shape[1], -1) # B*C*N
+                else:
+                    print("Inputs: ", list(inputs[i].keys()) )
+                    raise ValueError("The item {} to be reshaped is not in either inputs or outputs! ".format(item))
+
+        ### select
+        items_to_select = ['depth', 'img', 'depth_smooth', 'depth_noisy']
+        batch_size = inputs[i]['img'].shape[0]
+        flat_sel = {}
+        flat_sel[0] = [None] * batch_size
+        flat_sel[1] = [None] * batch_size
+        for i in range(2):
+            for j in range(batch_size):
+                flat_sel[i][j] = {}
+                mask = inout_flat[i]['mask'][j].squeeze()
+                for item in items_to_select:
+                    flat_sel[i][j][item] = inout_flat[i][item][j][:,mask].unsqueeze(0) # B*C*N
+
+                yz1_grid_selected = self.yz1_grid[:,mask]
+                xyz_selected = yz1_grid_selected * flat_sel[i][j]['depth'].squeeze(0) # C*N
+                flat_sel[i][j]['xyz'] = xyz_selected.unsqueeze(0)                     # B*C*N
+
+                xyz_mean = yz1_grid_selected * flat_sel[i][j]['depth'].mean()
+                flat_sel[i][j]['xyz_mean'] = xyz_mean.unsqueeze(0)
+
+                xyz_smooth = yz1_grid_selected * flat_sel[i][j]['depth_smooth'].squeeze(0)
+                flat_sel[i][j]['xyz_smooth'] = xyz_smooth.unsqueeze(0)
+
+                xyz_noisy = yz1_grid_selected * flat_sel[i][j]['depth_noisy'].squeeze(0)
+                flat_sel[i][j]['xyz_noisy'] = xyz_noisy.unsqueeze(0)
+
+        ### prepare input to cvo
+        vectors_to_cvo = {}
+        vectors_to_cvo[0] = {}
+        vectors_to_cvo[1] = {}
+        vectors_to_cvo[0]['xyz'] = flat_sel[0][0]['xyz']
+        vectors_to_cvo[0]['rgb'] = flat_sel[0][0]['img']
+
+        weight_mean_grid = np.linspace(0,1,11)
+        losses = {}
+        losses['func_dist'] = np.zeros(11)
+        losses['cos_sim'] = np.zeros(11)
+        for k in range(11):
+            weight_mean = weight_mean_grid[k]
+
+            vectors_to_cvo[1]['rgb'] = flat_sel[1][0]['img']
+            vectors_to_cvo[1]['xyz'] = flat_sel[1][0]['xyz'] * weight_mean + flat_sel[1][0]['xyz_noisy'] * (1-weight_mean) 
+
+            xyz2_homo = torch.cat( ( vectors_to_cvo[1]['xyz'], torch.ones((vectors_to_cvo[1]['xyz'].shape[0], 1, vectors_to_cvo[1]['xyz'].shape[2])).to(self.device) ), dim=1) # B*4*N
+            xyz2_trans_homo = torch.matmul(pose1_2, xyz2_homo) # B*4*N
+            xyz2_trans = xyz2_trans_homo[:, 0:3, :] # B*3*N
+            vectors_to_cvo[1]['xyz'] = xyz2_trans
+
+            ### gramian
+            gramians = {}
+            items_to_calc_gram = ['xyz', 'rgb']
+            list_of_ij = [(0,0), (1,1), (0,1)]
+            dist_coef = {}
+            dist_coef['xyz'] = 0.1
+            dist_coef['rgb'] = 0.1
+            for ij in list_of_ij:
+                gramians[ij] = {}
+                (i,j) = ij
+                for item in items_to_calc_gram:
+                    gramians[ij][item] = kern_mat( vectors_to_cvo[i][item], vectors_to_cvo[j][item], dist_coef=dist_coef[item] )
+            
+            ### cvo loss
+            inner_prods = {}
+            for ij in list_of_ij:
+                inner_prods[ij] = torch.sum(gramians[ij]['xyz'] * gramians[ij]['rgb'])
+
+            losses['func_dist'][k] = inner_prods[(0,0)] + inner_prods[(1,1)] - 2 * inner_prods[(0,1)] 
+            losses['cos_sim'][k] = 1 - inner_prods[(0,1)] / torch.sqrt( inner_prods[(0,0)] * inner_prods[(1,1)] )
+
+            ### visualize
+            if visualize:
+                if True: #k == 1 or k == 10:
+                    draw3DPts(vectors_to_cvo[0]['xyz'], vectors_to_cvo[1]['xyz'], vectors_to_cvo[0]['rgb'], vectors_to_cvo[1]['rgb'])
+
+        print('loss:', losses['func_dist'])
+        plt.figure()
+        plt.plot(weight_mean_grid, losses['func_dist'])
+        plt.show()

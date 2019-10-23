@@ -50,6 +50,7 @@ class LossOptions:
         self.keep_scale_consistent = True
         self.eval_full_size = False ## This option matters only when keep_scale_consistent is True
 
+        self.trial_mode = False
         self.run_eval = False
         self.top_k_list = [3000]
         self.grid_list = [1]

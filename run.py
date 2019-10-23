@@ -18,8 +18,9 @@ import time
 from options import LossOptions, UnetOptions
 
 from log import visualize_to_tensorboard, scale_to_tensorboard, pt_sel_log, pt_sel
+from gaussian_smooth import SobelFilter
 
-from hist_and_thresh import create_hist
+import matplotlib.pyplot as plt
 
 import json
 import copy
@@ -63,14 +64,14 @@ class Trainer:
 
         ################################# dataset
         ### for TUM dataset, you need to run associate.py on a folder of unzipped folders of TUM data sequences
-        if self.loss_options.keep_scale_consistent and (not self.loss_options.run_eval):
+        if self.loss_options.keep_scale_consistent and (not (self.loss_options.run_eval or self.loss_options.trial_mode) ):
             img_pose_dataset = ImgPoseDataset(
                 root_dir = self.loss_options.root_dir, 
                 transform=transforms.Compose([
                     Rescale(output_size=(self.loss_options.height, self.loss_options.width), post_fn=preprocess_input_fn), ToTensor(device=self.device), 
                     SplitBlocks(self.loss_options.height_split, self.loss_options.width_split, self.loss_options.effective_height, self.loss_options.effective_width) ]), 
                 folders=self.loss_options.folders )
-        elif self.loss_options.data_aug_rotate180 and (not self.loss_options.run_eval):
+        elif self.loss_options.data_aug_rotate180 and (not (self.loss_options.run_eval or self.loss_options.trial_mode) ):
             img_pose_dataset = ImgPoseDataset(
                 root_dir = self.loss_options.root_dir, 
                 transform=transforms.Compose([
@@ -143,6 +144,8 @@ class Trainer:
         
         if self.loss_options.run_eval:
             self.eval()
+        elif self.loss_options.trial_mode:
+            self.trial()
         else:
             self.train()
 
@@ -187,6 +190,33 @@ class Trainer:
             #     print('pred_euler:')
             #     print(euler_pred)
         return start_time, overall_time
+
+    def validate_sample(self, inputs):
+        for i in range(2):
+            gray = inputs[i]['gray']
+            grad_mag = self.sobel_filter(gray)
+            if grad_mag.max() < 0.5:
+                return False
+            # print('grad_mag.max', grad_mag.max())
+            # plt.imshow(gray.squeeze().cpu().numpy())
+            # plt.show()
+        return True
+
+    def trial(self):
+        print('trialing mode')
+
+        iter_overall = 0
+        start_time = time.time()
+        overall_time = 0
+        
+        for i_epoch in range(self.loss_options.epochs):
+            print('entering epoch', i_epoch) 
+            for i_batch, sample_batch in enumerate(self.data_loader_train):
+                if iter_overall > self.loss_options.total_iters:
+                    break
+
+                self.model_overall.model_loss.simple_cvo(sample_batch, visualize=True)
+        return
 
     def eval(self):
         print('Start evaluation')
@@ -238,6 +268,9 @@ class Trainer:
         overall_time = 0
         
         iter_in_update_loop = 0
+
+        self.sobel_filter = SobelFilter().to(self.device)
+
         for i_epoch in range(self.loss_options.epochs):
             print('entering epoch', i_epoch) 
             for i_batch, sample_batch_ in enumerate(self.data_loader_train):
@@ -249,9 +282,18 @@ class Trainer:
 
                 ### Run through the model
                 if self.loss_options.keep_scale_consistent:
-                    i_tile = np.random.randint(self.loss_options.height_split)
-                    j_tile = np.random.randint(self.loss_options.width_split)
-                    sample_batch = sample_batch_[ (i_tile, j_tile) ]
+                    valid_flag = False
+                    crop_attempt = 0
+                    while valid_flag == False and crop_attempt < 20:
+                        i_tile = np.random.randint(self.loss_options.height_split)
+                        j_tile = np.random.randint(self.loss_options.width_split)
+                        sample_batch = sample_batch_[ (i_tile, j_tile) ]
+                        valid_flag = self.validate_sample(sample_batch)
+                        crop_attempt += 1
+                    if crop_attempt > 1:
+                        print('re-cropping happened! crop_attempt:', crop_attempt)
+                    if crop_attempt >= 20:
+                        continue
                 else:
                     sample_batch = sample_batch_
 

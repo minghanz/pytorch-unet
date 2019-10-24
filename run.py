@@ -49,7 +49,7 @@ def split_train_val(img_pose_dataset, validation_split, batch_size=1):
 class Trainer:
     def __init__(self):
         ################################# options ## CARLA uses cuda:1
-        self.device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
+        self.device = torch.device('cuda:0' if torch.cuda.is_available()else 'cpu')
 
         self.unet_options = UnetOptions()
         self.unet_options.setto()
@@ -154,7 +154,7 @@ class Trainer:
             visualize_mode = iter_overall % 10 == 0
             eval_mode = False
         else:
-            visualize_mode = (iter_overall <= 1000 and iter_overall % 100 == 0) or (iter_overall > 1000 and iter_overall % 500 == 0)
+            visualize_mode = (iter_overall <= 100 and iter_overall % 10 == 0) or (iter_overall <= 1000 and iter_overall % 100 == 0) or (iter_overall > 1000 and iter_overall % 500 == 0)
             eval_mode = iter_overall % 100 == 0
 
         if visualize_mode and self.loss_options.effective_width <= 128:
@@ -200,6 +200,12 @@ class Trainer:
             # print('grad_mag.max', grad_mag.max())
             # plt.imshow(gray.squeeze().cpu().numpy())
             # plt.show()
+
+            depth_valid = inputs[i]['depth'] > 0
+            valid_num = depth_valid.sum().to(torch.float32)
+            total_num = depth_valid.numel()
+            if valid_num / total_num < 0.5:
+                return False
         return True
 
     def trial(self):

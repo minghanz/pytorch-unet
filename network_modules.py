@@ -498,8 +498,7 @@ class innerProdLoss(nn.Module):
                     flat_sel[i]['feature_normalized'] = torch.div(fea_centered, fea_norm )
 
                     if self.norm_dim == 2 or self.norm_dim == (1,2):
-                        if self.opt.L_norm == 1:
-                            flat_sel[i]['feature_normalized'] *= self.opt.feat_mean_per_chnl
+                        flat_sel[i]['feature_normalized'] *= self.opt.feat_scale_after_normalize
                         fea_norm_sum = torch.mean( torch.norm(flat_sel[i]['feature_normalized'], dim=2) )
                     else:
                         flat_sel[i]['feature_normalized'] *= self.opt.feat_norm_per_pxl
@@ -521,8 +520,7 @@ class innerProdLoss(nn.Module):
                     fea_norm = fea_norm.unsqueeze(3) ## B*C*1*1 or B*1*1*1
                     fea_centered = outputs[i]['feature'][idx_in_batch:idx_in_batch+1] - fea_mean
                     outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = torch.div(fea_centered, fea_norm)
-                    if self.opt.L_norm == 1:
-                        outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] *= self.opt.feat_mean_per_chnl
+                    outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] *= self.opt.feat_scale_after_normalize
 
                 elif self.norm_dim == 1:
                     outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = outputs[i]['feature'][idx_in_batch:idx_in_batch+1]
@@ -535,8 +533,9 @@ class innerProdLoss(nn.Module):
     def output_feature_norm(self, outputs, losses):
         for i in range(2):
             ### It's possible that output_feature_normalized is not run, then feature_normalized will be all zeros
+            ### 10/25: validate_sample function added checking of valid depth number, so this may not be necessary now
             if torch.max(outputs[i]['feature_normalized']) == 0:
-                # print("nan will happen!!!!!!!!!!!!!!!")
+                print("nan will happen!!!!!!!!!!!!!!!")
                 feature = outputs[i]['feature']
                 outputs[i]['feature_normalized'] = feature
                 #### centralize and normalize
@@ -555,8 +554,7 @@ class innerProdLoss(nn.Module):
                             fea_norm = torch.norm(fea_centered, dim=norm_dim, keepdim=True) #L2 norm across channels # B*1*N
 
                         outputs[i]['feature_normalized'] = torch.div(fea_centered, fea_norm)
-                        if self.opt.L_norm == 1:
-                            outputs[i]['feature_normalized'] *= self.opt.feat_mean_per_chnl
+                        outputs[i]['feature_normalized'] *= self.opt.feat_scale_after_normalize
                 # print("fixed:")
                 # print(outputs[i]['feature_normalized'])
                 # print(losses['final'])
@@ -681,6 +679,25 @@ class innerProdLoss(nn.Module):
                 gramians[ij] = torch.matmul(flat_sel[i][item_to_calc_gramian].transpose(1,2), flat_sel[j][item_to_calc_gramian])
             else:
                 gramians[ij] = kern_mat( flat_sel[i][item_to_calc_gramian], flat_sel[j][item_to_calc_gramian], dist_coef=self.dist_coef[item] )
+                if torch.isnan(gramians[ij]).any() or torch.isinf(gramians[ij]).any():
+                    print("flat_sel i", flat_sel[i][item_to_calc_gramian])
+                    print("flat_sel j", flat_sel[j][item_to_calc_gramian])
+                    print("feature mean", flat_sel[i]['feature_mean'])
+                    print("feature mean", flat_sel[j]['feature_mean'])
+                    print("feature norm", flat_sel[i]['feature_norm'])
+                    print("feature norm", flat_sel[j]['feature_norm'])
+                    print("flat feat i", flat_sel[i]["feature"])
+                    print("flat feat j", flat_sel[j]["feature"])
+                    print("ij, item:", ij, item, item_to_calc_gramian)
+                    print("dist_coef", self.dist_coef[item])
+                    print("nan in flat_sel i?", torch.isnan(flat_sel[i][item_to_calc_gramian]).any())
+                    print("inf in flat_sel i?", torch.isinf(flat_sel[i][item_to_calc_gramian]).any())
+                    print("nan in flat_sel j?", torch.isnan(flat_sel[j][item_to_calc_gramian]).any())
+                    print("inf in flat_sel j?", torch.isinf(flat_sel[j][item_to_calc_gramian]).any())
+                    
+                assert not torch.isnan(gramians[ij]).any()
+                assert not torch.isinf(gramians[ij]).any()
+                    
 
         if self.i_batch is not None and self.i_batch % 500 == 0:
             self.print_stat_vec_and_gram(flat_sel, gramians, item_to_calc_gramian)

@@ -92,8 +92,8 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
 
         # print(pcl_1.shape, pcl_2.shape)
         pcl_diff = SubNormFunction.apply(pcl_1.contiguous(), pcl_2.contiguous())
-        assert not torch.isnan(pcl_diff).any()
-        assert not torch.isinf(pcl_diff).any()
+        # assert not torch.isnan(pcl_diff).any()
+        # assert not torch.isinf(pcl_diff).any()
         # pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
         pcl_diff_exp = torch.exp(-pcl_diff / (2 * dist_coef * dist_coef) )
 

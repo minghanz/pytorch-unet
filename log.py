@@ -319,7 +319,9 @@ def pt_sel(output, k_list, grid_list, sample_aug_list):
     return
 
 def pt_sel_log(sample_batch, output, output_folder, iter_overall, k_list, grid_list, sample_aug_list):
-    feature1 = output[0]['feature']  ## maybe should use feature_normalized, which is not calculated in eval_mode, so the code structure should be adjusted 
+    feature1 = output[0]['feature_normalized']  
+    ## before 10/23, the result is using ['feature'], which is centerred but not normalized, therefore is not consistent with what is used in training CVO loss
+    ## but those result are all in sparsify_mode == 5, i.e. self.norm_dim = (1,2), L_norm == 1 which means the feature map is scaled altogether 
     imgname = sample_batch['imgname 1']
 
     feat_np1 = feat_to_np(feature1)

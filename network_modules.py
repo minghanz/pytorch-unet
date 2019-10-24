@@ -125,25 +125,31 @@ class UNetInnerProd(nn.Module):
                 outputs[i]['feature_w'] = feature_w 
             else:
                 feature = self.model_UNet(img)
-            ## centralize feature
-            feature_centered = feature - torch.mean(feature, dim=(2,3), keepdim=True)
-            # ## manually zeroing edge part
-            if self.opt_loss.zero_edge_region:
-                remove_edge(feature_centered)
-            ## normalize the max of feature norm of any pixel to 1
-            feature_norm = torch.norm(feature_centered, dim=1, keepdim=True)
-            feature_norm = feature_norm / torch.max(feature_norm)
-            outputs[i]['feature_norm'] = feature_norm
-            ## PCA
-            if self.opt_loss.pca_in_loss or self.opt_loss.visualize_pca_chnl:
-                feature_3, feature_pca = feat_pca(feature_centered)
-                outputs[i]['feature_pca'] = feature_pca
-                outputs[i]['feature_chnl3'] = feature_3
-            ## what is used in calculation of loss
-            if self.opt_loss.pca_in_loss:
-                outputs[i]['feature'] = feature_pca
-            else:
-                outputs[i]['feature'] = feature_centered # feature or feature_centered? 
+
+            # if self.opt_loss.kernalize:
+            #     ## centralize feature
+            #     feature_centered = feature - torch.mean(feature, dim=(2,3), keepdim=True)
+            #     # ## manually zeroing edge part
+            #     if self.opt_loss.zero_edge_region:
+            #         remove_edge(feature_centered)
+            # else:
+            #     feature_centered = feature
+            # ## normalize the max of feature norm of any pixel to 1
+            # feature_norm = torch.norm(feature_centered, dim=1, keepdim=True)
+            # feature_norm = feature_norm / torch.max(feature_norm)
+            # outputs[i]['feature_norm'] = feature_norm
+            # ## PCA
+            # if self.opt_loss.pca_in_loss or self.opt_loss.visualize_pca_chnl:
+            #     feature_3, feature_pca = feat_pca(feature_centered)
+            #     outputs[i]['feature_pca'] = feature_pca
+            #     outputs[i]['feature_chnl3'] = feature_3
+            # ## what is used in calculation of loss
+            # if self.opt_loss.pca_in_loss:
+            #     outputs[i]['feature'] = feature_pca
+            # else:
+            #     outputs[i]['feature'] = feature_centered # feature or feature_centered? 
+
+            outputs[i]['feature'] = feature
             outputs[i]['feature_normalized'] = torch.zeros_like(outputs[i]['feature'])
             
         return outputs
@@ -345,6 +351,8 @@ class innerProdLoss(nn.Module):
         if valid_single_loss:
             for i in range(len(self.opt.loss_item)):
                 losses['final'] += losses[self.opt.loss_item[i]] * self.opt.loss_weight[i]
+        
+        self.output_feature_norm(outputs, losses)
             
         return losses, outputs
 
@@ -435,60 +443,140 @@ class innerProdLoss(nn.Module):
         if self.opt.sparsify_mode == 1:
             # 1 using a explicit weighting map, normalize L2 norm of each pixel, no norm output
             self.norm_mode_for_feat_gram = True
-            self.norm_dim_for_feat_gram = 1
-        elif self.opt.sparsify_mode == 2 or self.opt.sparsify_mode == 5:
+            self.norm_dim = 1
+        elif self.opt.sparsify_mode == 2:
             # normalize L1 norm of each channel, output L2 norm of each channel
             self.norm_mode_for_feat_gram = True
-            self.norm_dim_for_feat_gram = 3
+            self.norm_dim = 2
+        elif self.opt.sparsify_mode == 5:
+            # normalize L1 norm of each batch, output L2 norm of each channel
+            self.norm_mode_for_feat_gram = True
+            self.norm_dim = (1,2)
+
         elif self.opt.sparsify_mode == 3:
             # no normalization, output L1 norm of each channel
             self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 2
+            self.norm_dim = 2
         elif self.opt.sparsify_mode == 4:
             # no normalization, output L2 norm of each pixel
             self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 1
+            self.norm_dim = 1
         elif self.opt.sparsify_mode == 6:
             # no normalization, no norm output
             self.norm_mode_for_feat_gram = False
-            self.norm_dim_for_feat_gram = 0
+            self.norm_dim = 0
+        ### Originally, use L2 norm when norm_dim == 1, use L1 norm when norm_dim == 2 or (1,2)
+        ### Not defined: L2 norm when norm_dim = (1,2)
 
         for i in range(2):
             fea_flat = flat_sel[i]['feature']
-            flat_sel[i]['feature_normalized'] = flat_sel[i]['feature']
+            flat_sel[i]['feature_normalized'] = fea_flat
             flat_sel[i]['feature_norm_sum'] = torch.tensor(0., dtype=fea_flat.dtype, device=fea_flat.device )
 
-            if self.norm_dim_for_feat_gram == 1 or self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
-                if self.norm_dim_for_feat_gram == 1:
-                    fea_norm = torch.norm(fea_flat, dim=1, keepdim=True) #L2 norm across channels # B*1*N
-                elif self.norm_dim_for_feat_gram == 2:
-                    fea_norm = torch.mean(torch.abs(fea_flat), dim=2, keepdim=True) # L1 norm across pixels # B*C*1
-                elif self.norm_dim_for_feat_gram == 3:
-                    fea_norm = torch.mean(torch.abs(fea_flat), dim=(1,2), keepdim=True) # L1 norm across pixels # B*1*1
+            ## Skip if we want to no centralization and no normalization
+            if self.norm_dim == 1 or self.norm_dim == 2 or self.norm_dim == (1,2):
+                ## Calculate the mean and centralize
+                fea_mean = torch.mean(fea_flat, dim=self.norm_dim, keepdim=True)
+                fea_centered = fea_flat - fea_mean
+
+                ## Calculate the norm along a certain dimension with the L1 or L2 norm
+                if self.opt.L_norm == 1:
+                    fea_norm = torch.mean(torch.abs(fea_centered), dim=self.norm_dim, keepdim=True) # L1 norm across channels # B*1*N / pixels # B*C*1 / pixel and channels * B*1*1
+                elif self.opt.L_norm == 2:
+                    fea_norm = torch.norm(fea_centered, dim=self.norm_dim, keepdim=True) #L2 norm across channels # B*1*N
+
+                flat_sel[i]['feature_mean'] = fea_mean
                 flat_sel[i]['feature_norm'] = fea_norm
 
+                # print("fea_mean", fea_mean)
+                # print("fea_norm", fea_norm)
+
                 fea_norm_sum = torch.mean(fea_norm)
+
+                ## if self.norm_mode_for_feat_gram is False, feature_normalized is feature
                 if self.norm_mode_for_feat_gram == True:
-                    if self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3:
-                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_mean_per_chnl
+                    flat_sel[i]['feature_normalized'] = torch.div(fea_centered, fea_norm )
+
+                    if self.norm_dim == 2 or self.norm_dim == (1,2):
+                        if self.opt.L_norm == 1:
+                            flat_sel[i]['feature_normalized'] *= self.opt.feat_mean_per_chnl
                         fea_norm_sum = torch.mean( torch.norm(flat_sel[i]['feature_normalized'], dim=2) )
                     else:
-                        flat_sel[i]['feature_normalized'] = torch.div(fea_flat, fea_norm ) * self.opt.feat_norm_per_pxl
+                        flat_sel[i]['feature_normalized'] *= self.opt.feat_norm_per_pxl
+                        ### norm_dim== 1 (reduce the channel dimension) cannot be consistent with output map (the norm is in each pixel)
 
                 flat_sel[i]['feature_norm_sum'] = fea_norm_sum
 
         return
     
+    ## Normalize the overall feature map using the statistics of the selected pixels
     def output_feature_normalized(self, flat_sel, outputs, idx_in_batch):
         for i in range(2):
-            if self.norm_mode_for_feat_gram and (self.norm_dim_for_feat_gram == 2 or self.norm_dim_for_feat_gram == 3):
-                feat_norm = flat_sel[i]['feature_norm']
-                feat_norm = feat_norm.unsqueeze(3)
-                outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = torch.div( outputs[i]['feature'][idx_in_batch:idx_in_batch+1], feat_norm ) * self.opt.feat_mean_per_chnl
+            if self.norm_mode_for_feat_gram:
+                fea_norm = flat_sel[i]['feature_norm']
+                fea_mean = flat_sel[i]['feature_mean']
+
+                if self.norm_dim == 2 or self.norm_dim == (1,2):
+                    fea_mean = fea_mean.unsqueeze(3) ## B*C*1*1 or B*1*1*1
+                    fea_norm = fea_norm.unsqueeze(3) ## B*C*1*1 or B*1*1*1
+                    fea_centered = outputs[i]['feature'][idx_in_batch:idx_in_batch+1] - fea_mean
+                    outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = torch.div(fea_centered, fea_norm)
+                    if self.opt.L_norm == 1:
+                        outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] *= self.opt.feat_mean_per_chnl
+
+                elif self.norm_dim == 1:
+                    outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = outputs[i]['feature'][idx_in_batch:idx_in_batch+1]
+                    ### cannot apply normalization for each pixel using a subset of pixels
             else:
                 outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = outputs[i]['feature'][idx_in_batch:idx_in_batch+1] ### Note: here it is not aligned with what's in normalize_feature_after_sel
 
         return
+    
+    def output_feature_norm(self, outputs, losses):
+        for i in range(2):
+            ### It's possible that output_feature_normalized is not run, then feature_normalized will be all zeros
+            if torch.max(outputs[i]['feature_normalized']) == 0:
+                # print("nan will happen!!!!!!!!!!!!!!!")
+                feature = outputs[i]['feature']
+                outputs[i]['feature_normalized'] = feature
+                #### centralize and normalize
+                if self.norm_mode_for_feat_gram == True:
+                    if self.norm_dim == 2 or self.norm_dim == (1,2):
+                        if self.norm_dim == 2:
+                            norm_dim = (2,3)
+                        elif self.norm_dim == (1,2):
+                            norm_dim = (1,2,3)
+                        fea_mean = torch.mean(feature, dim=norm_dim, keepdim=True)
+                        fea_centered = feature - fea_mean
+
+                        if self.opt.L_norm == 1:
+                            fea_norm = torch.mean(torch.abs(fea_centered), dim=norm_dim, keepdim=True) # L1 norm across channels # B*1*N / pixels # B*C*1 / pixel and channels * B*1*1
+                        elif self.opt.L_norm == 2:
+                            fea_norm = torch.norm(fea_centered, dim=norm_dim, keepdim=True) #L2 norm across channels # B*1*N
+
+                        outputs[i]['feature_normalized'] = torch.div(fea_centered, fea_norm)
+                        if self.opt.L_norm == 1:
+                            outputs[i]['feature_normalized'] *= self.opt.feat_mean_per_chnl
+                # print("fixed:")
+                # print(outputs[i]['feature_normalized'])
+                # print(losses['final'])
+            ###
+
+            if self.opt.zero_edge_region:
+                remove_edge(outputs[i]['feature_normalized'])
+            ## normalize the max of feature norm of any pixel to 1
+            feature = outputs[i]['feature_normalized']
+            feature_norm = torch.norm(feature, dim=1, keepdim=True)
+            feature_norm = feature_norm / torch.max(feature_norm)
+            outputs[i]['feature_norm'] = feature_norm
+            
+            ## PCA
+            if self.opt.pca_in_loss or self.opt.visualize_pca_chnl:
+                feature_3, feature_pca = feat_pca(feature)
+                outputs[i]['feature_pca'] = feature_pca
+                outputs[i]['feature_chnl3'] = feature_3
+
+        return 
 
     def calc_loss(self, flat_sel, pose1_2, pose1_2_pred=None):
         '''

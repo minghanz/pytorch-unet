@@ -48,7 +48,7 @@ def split_train_val(img_pose_dataset, validation_split, batch_size=1):
 
 class Trainer:
     def __init__(self):
-        ################################# options
+        ################################# options ## CARLA uses cuda:1
         self.device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
 
         self.unet_options = UnetOptions()
@@ -91,7 +91,7 @@ class Trainer:
 
         ################################# pretrained weights
         if self.loss_options.run_eval:
-            checkpoint = torch.load('saved_models/with_color_Tue Oct 15 10:36:18 2019/epoch00_10000.pth')
+            checkpoint = torch.load(self.loss_options.pretrained_weight_path)
             self.model_overall.model_UNet.load_state_dict(checkpoint['model_state_dict'])
             self.model_overall.model_loss.load_state_dict(checkpoint['loss_model_state_dict'])
             self.optim.load_state_dict(checkpoint['optimizer_state_dict'])

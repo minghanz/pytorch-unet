@@ -25,6 +25,11 @@ class UnetOptions:
         self.padding=True
         self.up_mode='upsample'
 
+
+## TODO: normalizing using std
+## TODO: changing length scale
+## TODO: batch norm
+
 class LossOptions:
     def __init__(self, unetoptions):
         self.diff_mode = False
@@ -33,8 +38,12 @@ class LossOptions:
         self.color_in_cost = True
 
         self.min_dist_mode = True # distance between functions
-        self.sparsify_mode = 5 # 1 fix L2 of each pixel, 2 max L2 fix L1 of each channel, 3 min L1, 4 min L2 across channels, 5 fix L1 of each channel, 
+        self.sparsify_mode = 2 # 1 fix L2 of each pixel, 2 max L2 fix L1 of each channel, 3 min L1, 4 min L2 across channels, 5 fix L1 of each channel, 
                         # 6 no normalization, no norm output
+        self.L_norm = 2
+        ## before 10/23/2019, use L_norm=1, sparsify_mode=5, kernalize=True, batch_norm=False, dist_coef = 0.1
+        ## L_norm=1, sparsify_mode=2, kernalize=True, batch_norm=False, dist_coef = 0.01, feat_mean_per_chnl = 1e-2
+        ## L_norm=2, sparsify_mode=2, kernalize=True, batch_norm=False, dist_coef = 0.01
 
         self.norm_in_loss = False
 
@@ -57,6 +66,9 @@ class LossOptions:
         self.sample_aug_list = [1, 3, 5, -1]
 
         self.opt_unet = unetoptions
+
+        if self.run_eval:
+            self.pretrained_weight_path = 'saved_models/with_color_Tue Oct 22 22:17:24 2019/epoch00_20000.pth'
 
         if self.run_eval:
             self.folders = ['rgbd_dataset_freiburg1_desk']
@@ -100,7 +112,7 @@ class LossOptions:
         self.dist_coef['xyz_align'] = 0.1
         self.dist_coef['xyz_noisy'] = 0.1
         self.dist_coef['img'] = 0.5 # originally I used 0.1, but Justin used 0.5 here
-        self.dist_coef['feature'] = 0.1 ###?
+        self.dist_coef['feature'] = 0.01 ###?
 
         self.loss_item = ["cos_sim", "func_dist"] # "cos_sim"
         if self.normalize_inprod_over_pts:
@@ -109,7 +121,7 @@ class LossOptions:
             self.loss_weight = [1e6, 1]
         self.lr = 1e-5
         self.lr_decay_iter = 20000
-        self.feat_mean_per_chnl = 1e-1 ## the mean abs of a channel across all selected pixels (pre_gramian)
+        self.feat_mean_per_chnl = 1e-2 ## the mean abs of a channel across all selected pixels (pre_gramian)
         self.feat_norm_per_pxl = 1 ## the L2 norm of feature vector of a pixel (pre_gramian). 1 means this value has no extra effect
 
         self.batch_size = 1

@@ -324,6 +324,7 @@ class innerProdLoss(nn.Module):
             flat_sel[1] = self.selected(inout_flat, 1, i) #3*N  
 
             if flat_sel[0]['xyz'].shape[-1] == 0 or flat_sel[1]['xyz'].shape[-1] == 0:
+                print("All pixels are masked out!!!!!!!!!")
                 continue
 
             ### Post process after selection
@@ -522,6 +523,14 @@ class innerProdLoss(nn.Module):
                     outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = torch.div(fea_centered, fea_norm)
                     outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] *= self.opt.feat_scale_after_normalize
 
+                    # if i == 0:
+                    #     o_ = outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1]
+                    #     f_ = flat_sel[i]['feature_normalized']
+                    #     print("output{}: [{:.3f}, {:.3f}], L1 mean: {}".format(i, 
+                    #         torch.min(o_), torch.max(o_), torch.mean(torch.abs(o_)) ) )
+                    #     print("flat_sel{}: [{:.3f}, {:.3f}], L1 mean: {}".format(i, 
+                    #         torch.min(f_), torch.max(f_), torch.mean(torch.abs(f_)) ) )
+
                 elif self.norm_dim == 1:
                     outputs[i]['feature_normalized'][idx_in_batch:idx_in_batch+1] = outputs[i]['feature'][idx_in_batch:idx_in_batch+1]
                     ### cannot apply normalization for each pixel using a subset of pixels
@@ -562,6 +571,11 @@ class innerProdLoss(nn.Module):
 
             if self.opt.zero_edge_region:
                 remove_edge(outputs[i]['feature_normalized'])
+            
+            # o_ = outputs[i]['feature_normalized']
+            # print("output{}: [{:.3f}, {:.3f}], L1 mean: {}".format(i, 
+            #     torch.min(o_), torch.max(o_), torch.mean(torch.abs(o_)) ) )
+
             ## normalize the max of feature norm of any pixel to 1
             feature = outputs[i]['feature_normalized']
             feature_norm = torch.norm(feature, dim=1, keepdim=True)
@@ -705,14 +719,14 @@ class innerProdLoss(nn.Module):
 
     def print_stat_vec_and_gram(self, flat_sel, gramians, item):
         for i in range(1):
-            print("Vec {} {}, max {}, min {}, mean {}, median {}".format(item, i, flat_sel[i][item].max(), flat_sel[i][item].min(), flat_sel[i][item].mean(), flat_sel[i][item].median() ) )
+            print("Vec {} {}, [{}, {}], mean {}, median {}".format(item, i, flat_sel[i][item].min(), flat_sel[i][item].max(), flat_sel[i][item].mean(), flat_sel[i][item].median() ) )
 
         if self.opt.min_dist_mode:
             list_of_ij = [(0,0), (0,1)]
         else:
             list_of_ij =[(0,1)]
         for ij in list_of_ij:
-            print("Gramian {} {}, max {}, min {}, mean {}, median {}".format(item, ij, gramians[ij].max(), gramians[ij].min(), gramians[ij].mean(), gramians[ij].median() ) )
+            print("Gramian {} {}, [{}, {}], mean {}, median {}".format(item, ij, gramians[ij].min(), gramians[ij].max(), gramians[ij].mean(), gramians[ij].median() ) )
         print(' ')
 
     def calc_inner_prod(self, gramians, flat_sel):

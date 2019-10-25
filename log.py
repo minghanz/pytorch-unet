@@ -329,6 +329,8 @@ def pt_sel_log(sample_batch, output, output_folder, iter_overall, k_list, grid_l
     for i in range(len(feat_np1)):
         feat_np1[i].tofile(os.path.join(output_folder, 'feature_map', 'feat_'+imgname[i] +'.bin') )
         print(iter_overall, 'imgname', i, ':', imgname[i])
+        # print("feat_np1[{}]: [{:.3f}, {:.3f}], {}".format(i, np.min(feat_np1[i]), np.max(feat_np1[i]), feat_np1[i].dtype))
+        # print("feature1[{}]: [{:.3f}, {:.3f}]".format(i, torch.min(feature1[i]), torch.max(feature1[i])))
 
     for k in k_list:
         for g in grid_list:
@@ -337,6 +339,8 @@ def pt_sel_log(sample_batch, output, output_folder, iter_overall, k_list, grid_l
                 mask_np1 = mask_to_np(mask1_topk)
                 for i in range(len(feat_np1)):
                     mask_np1[i].tofile(os.path.join(output_folder, 'mask_top_{}/grid_{}/sample_{}'.format(k, g, sample_aug), imgname[i] +'.bin') )
+                    # print("mask_np1[{}]: [{}, {}], {}".format(i, np.min(mask_np1[i]), np.max(mask_np1[i]), mask_np1[i].dtype))
+                    # print("mask1_topk[{}]: [{}, {}]".format(i, torch.min(mask1_topk[i]), torch.max(mask1_topk[i])))
 
     return
 

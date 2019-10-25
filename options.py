@@ -40,7 +40,7 @@ class LossOptions:
         self.min_dist_mode = True # distance between functions
         self.sparsify_mode = 2 # 1 fix L2 of each pixel, 2 max L2 fix L1 of each channel, 3 min L1, 4 min L2 across channels, 5 fix L1 of each channel, 
                         # 6 no normalization, no norm output
-        self.L_norm = 2
+        self.L_norm = 1
         ## before 10/23/2019, use L_norm=1, sparsify_mode=5, kernalize=True, batch_norm=False, dist_coef = 0.1
         ## L_norm=1, sparsify_mode=2, kernalize=True, batch_norm=False, dist_coef = 0.1, feat_scale_after_normalize = 1e-1
         ## L_norm=2, sparsify_mode=2, kernalize=True, batch_norm=False, dist_coef = 0.1, feat_scale_after_normalize = 1e1
@@ -63,12 +63,12 @@ class LossOptions:
         self.run_eval = False
         self.top_k_list = [3000]
         self.grid_list = [1]
-        self.sample_aug_list = [1, 3, 5, -1]
+        self.sample_aug_list = [3, -1]
 
         self.opt_unet = unetoptions
 
         if self.run_eval:
-            self.pretrained_weight_path = 'saved_models/with_color_Tue Oct 22 22:17:24 2019/epoch00_20000.pth'
+            self.pretrained_weight_path = 'saved_models/with_color_Thu Oct 24 21:44:21 2019/epoch00_20052.pth'
 
         if self.run_eval:
             self.folders = ['rgbd_dataset_freiburg1_desk']

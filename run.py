@@ -343,9 +343,20 @@ class Trainer:
                     sample_val_ = next(iter(self.data_loader_val))
 
                     if self.loss_options.keep_scale_consistent:
-                        i_tile = np.random.randint(self.loss_options.height_split)
-                        j_tile = np.random.randint(self.loss_options.width_split)
-                        sample_val = sample_val_[ (i_tile, j_tile) ]
+                        valid_flag = False
+                        while not valid_flag:
+                            crop_attempt = 0
+                            while valid_flag == False and crop_attempt < 20:
+                                i_tile = np.random.randint(self.loss_options.height_split)
+                                j_tile = np.random.randint(self.loss_options.width_split)
+                                sample_val = sample_val_[ (i_tile, j_tile) ]
+                                valid_flag = self.validate_sample(sample_val)
+                                crop_attempt += 1
+                            if crop_attempt > 1:
+                                print('eval: re-cropping happened! crop_attempt:', crop_attempt)
+                            if valid_flag == False:
+                                sample_val_ = next(iter(self.data_loader_val))
+                                print('resample for eval')
                     else:
                         sample_val = sample_val_
 

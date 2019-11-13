@@ -13,6 +13,7 @@ import os
 import math
 import copy
 import random
+import torchsnooper
 
 def skewmat_from_w(w):
     '''
@@ -33,7 +34,7 @@ def pose_RtT_from_se3_tensor(w, v, inverse=False):
     t = [None]*b
     T = [None]*b
     for i in range(b):
-        R[i], t[i], T[i] = pose_RtT_from_se3_tensor_single(w[i], v[i])
+        R[i], t[i], T[i] = pose_RtT_from_se3_tensor_single(w[i], v[i], inverse)
 
     R = torch.stack(R, dim=0)
     t = torch.stack(t, dim=0)
@@ -47,15 +48,21 @@ def pose_RtT_from_se3_tensor_single(w, v, inverse=False):
     '''
     skew = skewmat_from_w(w)
     theta = torch.norm(w)
-    A = torch.sin(theta)/theta
-    B = ( 1-torch.cos(theta) ) / (theta * theta)
-    C = (1 - A) / (theta * theta)
-
+    numerical_mode = torch.abs(theta) < 1e-5
+    
     I = torch.eye(3, dtype=torch.float, device=w.device)
     
-    R = I + A * skew + B * torch.mm(skew, skew)
-    V = I + B * skew + C * torch.mm(skew, skew)
-    t = torch.mm( V, v.unsqueeze(1) )
+    if numerical_mode:
+        R = I
+        t = v.unsqueeze(1)
+    else:
+        A = torch.sin(theta)/theta
+        B = ( 1-torch.cos(theta) ) / (theta * theta)
+        C = (1 - A) / (theta * theta)
+
+        R = I + A * skew + B * torch.mm(skew, skew)
+        V = I + B * skew + C * torch.mm(skew, skew)
+        t = torch.mm( V, v.unsqueeze(1) )
 
     if inverse:
         R = R.transpose(0, 1)
@@ -67,6 +74,56 @@ def pose_RtT_from_se3_tensor_single(w, v, inverse=False):
     ], dim=0)
     
     return R, t, T
+
+def pose_se3_from_T_tensor(T, pseudo=False):
+    ## output B*3, B*3
+    b = T.shape[0]
+    w = [None]*b
+    v = [None]*b
+    for i in range(b):
+        w[i], v[i] = pose_se3_from_T_tensor_single(T[i], pseudo)
+
+    w = torch.stack(w, dim=0)
+    v = torch.stack(v, dim=0)
+    return w, v
+    
+# @torchsnooper.snoop()
+def pose_se3_from_T_tensor_single(T, pseudo=False):
+    '''
+    https://jinyongjeong.github.io/Download/SE3/jlblanco2010geometry3d_techrep.pdf
+    '''
+
+    R = T[:3, :3]
+    t = T[:3, 3]
+
+    cos_theta = (R[0,0] + R[1,1] + R[2,2] - 1) / 2
+    theta = torch.acos(cos_theta)
+    numerical_mode = torch.isnan(theta).any() or torch.abs(theta) < 1e-5
+
+    if numerical_mode:
+        log_R = 1 / 2 * ( R - R.transpose(0, 1) )
+    else:
+        log_R = theta / ( 2*torch.sin(theta) ) * ( R - R.transpose(0, 1) )
+
+    w = torch.stack( ((log_R[2,1]-log_R[1,2])/2, -(log_R[2,0]-log_R[0,2])/2, (log_R[1,0]-log_R[0,1])/2 ) )
+
+    if not pseudo:
+        I = torch.eye(3, dtype=torch.float, device=T.device)
+        if numerical_mode:
+            # V_inv = I - 0.5 * log_R
+            V_inv = I
+        else:
+            # A1 = ( 1 - theta * torch.cos(theta/2) / ( 2 * torch.sin(theta/2) ) ) / (theta * theta)
+            A = 1.0/(theta*theta) - (1+torch.cos(theta))/(2.0*theta*torch.sin(theta))
+            # print("A1", A1) # have difference with A1 at 0.000x digit
+            # print("A", A)
+            V_inv = I - 0.5 * log_R + A * torch.mm(log_R, log_R) 
+
+        v = torch.mm( V_inv, t.unsqueeze(1) )
+        v = v.squeeze(1)
+    else:
+        v = t
+    return w, v
 
 def pose_from_euler_t(x,y,z,pitch_y,roll_x,yaw_z, transform=None):
     """
@@ -236,37 +293,28 @@ def load_from_carla(folders):
             poses_list.append(pose_mat)
             poses_euler_list.append( np.array([x,y,z,pitch,roll,yaw]) )
 
-        # # constructing pairs from consequential images
-        # for i in range(len(paths_dep)): #range(2): #
-        #     frame_num = int( paths_dep[i].split('/')[-1].split('.')[0] )
-        #     frame_num_img = int( paths_img[i].split('/')[-1].split('.')[0] )
-        #     assert frame_num == frame_num_img, "the names of img and depth are not aligned!"
-        #     if i > 0:
-        #         pose_relative = np.linalg.inv( poses_list[frame_num_last] ).dot( poses_list[frame_num] )
-        #         pair_dict = {'image_path 1': paths_img[i-1], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i-1], 'depth_path 2': paths_dep[i], 'rela_pose': pose_relative}
-        #         self.pair_seq.append(pair_dict)
-        #     frame_num_last = frame_num
-
         # constructing pairs from consequential 4 images
         for i in range(len(paths_dep)-1):
             frame_num = int( paths_dep[i].split('/')[-1].split('.')[0] )
             frame_num_img = int( paths_img[i].split('/')[-1].split('.')[0] )
             assert frame_num == frame_num_img, "the names of img and depth are not aligned!"
 
-            for j in range(1, min(5, len(paths_dep)-i) ):
+            for j in range(1, min(2, len(paths_dep)-i) ):
                 frame_next = int( paths_dep[i+j].split('/')[-1].split('.')[0] )
 
-                pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-                pose_euler_relative = euler_t_from_pose(pose_relative)
+                pose_relative1_2 = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                pose_relative2_1 = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+
+                pose_euler_relative = euler_t_from_pose(pose_relative1_2)
                 pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
-                            'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                            'rela_pose_from_1': pose_relative1_2, 'rela_pose_from_2': pose_relative2_1, 'rela_euler': pose_euler_relative}
                 pair_seq.append(pair_dict)
 
-                pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
-                pose_euler_relative = euler_t_from_pose(pose_relative)
-                pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
-                            'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
-                pair_seq.append(pair_dict)
+                # pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                # pose_euler_relative = euler_t_from_pose(pose_relative)
+                # pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
+                #             'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                # pair_seq.append(pair_dict)
 
         print(folder, 'is loaded')
         # break
@@ -411,27 +459,32 @@ def load_from_TUM(folders, simple_mode=False):
                 for j in range(1,2):
                     frame_next = i+j
 
-                    pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pose_relative1_2 = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                    pose_relative2_1 = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                    # pose_relative1_2_res = (pose_relative1_2[:3,:3] + pose_relative1_2.transpose()[:3,:3] )/2
+                    # np.fill_diagonal(pose_relative1_2_res, 0)
+
+                    pose_euler_relative = euler_t_from_pose(pose_relative1_2)
                     pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
-                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                                'rela_pose_from_1': pose_relative1_2, 'rela_pose_from_2': pose_relative2_1, 'rela_euler': pose_euler_relative}
                     pair_seq.append(pair_dict)
 
             else:
                 for j in range(1, min(2, len(paths_dep)-i) ):
                     frame_next = i+j
 
-                    pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-                    pose_euler_relative = euler_t_from_pose(pose_relative)
+                    pose_relative1_2 = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+                    pose_relative2_1 = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                    pose_euler_relative = euler_t_from_pose(pose_relative1_2)
                     pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
-                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                                'rela_pose_from_1': pose_relative1_2, 'rela_pose_from_2': pose_relative2_1, 'rela_euler': pose_euler_relative}
                     pair_seq.append(pair_dict)
 
-                    pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
-                    pose_euler_relative = euler_t_from_pose(pose_relative)
-                    pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
-                                'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
-                    pair_seq.append(pair_dict)
+                    # pose_relative = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+                    # pose_euler_relative = euler_t_from_pose(pose_relative)
+                    # pair_dict = {'image_path 1': paths_img[i+j], 'image_path 2': paths_img[i], 'depth_path 1': paths_dep[i+j], 'depth_path 2': paths_dep[i], 
+                    #             'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                    # pair_seq.append(pair_dict)
 
         if simple_mode:
             frame_num = len(paths_dep)-1
@@ -439,10 +492,11 @@ def load_from_TUM(folders, simple_mode=False):
             j = -1
             frame_next = i+j
 
-            pose_relative = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
-            pose_euler_relative = euler_t_from_pose(pose_relative)
+            pose_relative1_2 = np.linalg.inv( poses_list[frame_num] ).dot( poses_list[frame_next] )
+            pose_relative2_1 = np.linalg.inv( poses_list[frame_next] ).dot( poses_list[frame_num] )
+            pose_euler_relative = euler_t_from_pose(pose_relative1_2)
             pair_dict = {'image_path 1': paths_img[i], 'image_path 2': paths_img[i+j], 'depth_path 1': paths_dep[i], 'depth_path 2': paths_dep[i+j], 
-                        'rela_pose': pose_relative, 'rela_euler': pose_euler_relative}
+                        'rela_pose_from_1': pose_relative1_2, 'rela_pose_from_2': pose_relative2_1, 'rela_euler': pose_euler_relative}
             pair_seq.append(pair_dict)
 
         print('loaded')
@@ -466,7 +520,8 @@ class RotateOrNot(object):
             for i in range(2):
                 for item in items_to_rotate:
                     sample[i][item] = torch.flip(sample[i][item], dims=[1,2])
-            sample['rela_pose'] = torch.matmul(self.rot180matrix, torch.matmul(sample['rela_pose'], self.rot180matrix) )
+            sample['rela_pose_from_1'] = torch.matmul(self.rot180matrix, torch.matmul(sample['rela_pose_from_1'], self.rot180matrix) )
+            sample['rela_pose_from_2'] = torch.matmul(self.rot180matrix, torch.matmul(sample['rela_pose_from_2'], self.rot180matrix) )
             #TODO: transform sample['rela_euler'] 
                 
         return sample
@@ -514,7 +569,7 @@ class ToTensor(object):
                 else:
                     sample[i][item] = torch.from_numpy(trpsed).to(self.device, dtype=torch.float)
 
-        item_to_tensor = ['rela_pose', 'rela_euler']
+        item_to_tensor = ['rela_pose_from_1', 'rela_pose_from_2', 'rela_euler']
         for item in item_to_tensor:
             if self.device is None:
                 sample[item] = torch.from_numpy(sample[item])
@@ -609,7 +664,8 @@ class ImgPoseDataset(Dataset):
             depth_1, idepth_1 = process_dep_file(self.pair_seq[idx]['depth_path 1'], with_inv=True, source='TUM')
             depth_2, idepth_2 = process_dep_file(self.pair_seq[idx]['depth_path 2'], with_inv=True, source='TUM')
 
-        rela_pose = self.pair_seq[idx]['rela_pose']
+        rela_pose_from_1 = self.pair_seq[idx]['rela_pose_from_1']
+        rela_pose_from_2 = self.pair_seq[idx]['rela_pose_from_2']
         rela_euler = self.pair_seq[idx]['rela_euler']
 
         img_name1 = self.pair_seq[idx]['image_path 1'].split('/')[-1][:-4]
@@ -621,7 +677,7 @@ class ImgPoseDataset(Dataset):
         sample[0].update({'img': image_1, 'gray': gray_1, 'depth': depth_1, 'idepth': idepth_1})
         sample[1].update({'img': image_2, 'gray': gray_2, 'depth': depth_2, 'idepth': idepth_2})
 
-        sample.update({'rela_pose': rela_pose, 'rela_euler': rela_euler, 'imgname 1': img_name1})
+        sample.update({'rela_pose_from_1': rela_pose_from_1, 'rela_pose_from_2': rela_pose_from_2, 'rela_euler': rela_euler, 'imgname 1': img_name1})
     
         if self.transform:
             sample = self.transform(sample)

@@ -1,12 +1,14 @@
 import torch
 
 # import sub_cuda
-import sub_norm_cuda
+import sub_norm_cuda, cross_prod_cuda, cross_subtract_cuda
 from torch.autograd import Function
 import torch.nn.functional as F
 import torch.nn as nn
 
 import numpy as np
+
+from dataloader import pose_from_euler_t_Tensor
 
 class SubNormFunction(Function):
     @staticmethod
@@ -22,16 +24,25 @@ class SubNormFunction(Function):
         dx1, dx2 = sub_norm_cuda.backward(dy, x1, x2)
         return dx1, dx2
 
-# class SubFunction(Function):
-#     @staticmethod
-#     def forward(ctx, x1, x2):
-#         outputs = sub_cuda.forward(x1, x2 )
-#         return outputs
+class CrossProdFunction(Function):
+    @staticmethod
+    def forward(ctx, x1, x2):
+        outputs = cross_prod_cuda.forward(x1, x2)
+        return outputs
 
-#     @staticmethod
-#     def backward(ctx, dy):
-#         dx1, dx2 = sub_cuda.backward(dy.to(torch.device('cuda')) )
-#         return dx1.to(torch.device('cuda')), dx2.to(torch.device('cuda')) 
+class CrossSubtractFunction(Function):
+    @staticmethod
+    def forward(ctx, x1, x2):
+        outputs = cross_subtract_cuda.forward(x1, x2)
+        return outputs
+
+def cross_prod(pcl_1, pcl_2):
+    prod = CrossProdFunction.apply(pcl_1, pcl_2)
+    return prod
+
+def cross_subtract(pcl_1, pcl_2):
+    sub = CrossSubtractFunction.apply(pcl_1, pcl_2)
+    return sub
 
 def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
     """
@@ -331,8 +342,8 @@ def gen_rand_pose(source, noise_trans_scale, device):
     # rot_noise = np.random.normal(scale=3.0, size=(3,))
     #####################################################################################################
     trans_noise = torch.randn((3), dtype=torch.float, device=device) * noise_trans_scale
-    # rot_noise = torch.randn((3), dtype=torch.float, device=self.device) * 3.0
-    rot_noise = torch.zeros(3, dtype=torch.float, device=device)
+    rot_noise = torch.randn((3), dtype=torch.float, device=device) * 0.02
+    # rot_noise = torch.zeros(3, dtype=torch.float, device=device)
     
     if source=='CARLA':
         noise_euler_tensor = torch.stack([ trans_noise[0], 3*trans_noise[1], trans_noise[2], 0, rot_noise[1], 3*rot_noise[2] ]).unsqueeze(0)

@@ -4,8 +4,8 @@ import os
 
 k_list = [3000]
 grid_list = [1]
-sample_aug_list = [3, -1]
-output_folder = "/home/minghanz/pytorch-unet/feature_output/Lnorm_1_iter_20000"
+sample_aug_list = [-1]
+output_folder ="/home/minghanz/pytorch-unet/feature_output/with_color_Sat Nov  9 15:00:22 2019"
 
 feat_folder = os.path.join(output_folder, "feature_map")
 feat_files = os.listdir(feat_folder)

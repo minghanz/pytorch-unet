@@ -25,6 +25,8 @@ import matplotlib.pyplot as plt
 import json
 import copy
 
+from options_parser import ManualOptions
+
 def split_train_val(img_pose_dataset, validation_split, batch_size=1):
     ### Create train and val set using a fixed seed
     shuffle_dataset = True
@@ -49,11 +51,17 @@ def split_train_val(img_pose_dataset, validation_split, batch_size=1):
 class Trainer:
     def __init__(self):
         ################################# options ## CARLA uses cuda:1
-        self.device = torch.device('cuda:0' if torch.cuda.is_available()else 'cpu')
+        self.device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
+
+        manual_opt = ManualOptions()
+        over_opt = manual_opt.parse()
 
         self.unet_options = UnetOptions()
         self.unet_options.setto()
+
         self.loss_options = LossOptions(self.unet_options)
+        self.loss_options.set_from_manual(over_opt)
+        self.loss_options.set_loss_from_options()
 
         ################################# network
         preprocess_input_fn = None # using the above preprocessing function will make the rgb not in range [0, 1] and cause the rgb_to_hsv function to fail
@@ -99,25 +107,26 @@ class Trainer:
             self.model_overall.model_UNet.eval()
             self.model_overall.model_loss.eval()
 
-        if self.unet_options.continue_train: 
-            save_model_folder = os.path.join('saved_models', 'wo_color_Mon Sep 30 15:21:22 2019')
-            checkpoint = torch.load(os.path.join(save_model_folder, 'epoch00_3000.pth') )
+        if self.loss_options.continue_train: 
+            # self.save_model_folder = os.path.join('saved_models', 'with_color_Fri Nov  8 22:21:30 2019')
+            # checkpoint = torch.load(os.path.join(self.save_model_folder, 'epoch00_20000.pth') )
+            checkpoint = torch.load(self.loss_options.pretrained_weight_path)
             self.model_overall.model_UNet.load_state_dict(checkpoint['model_state_dict'])
             self.model_overall.model_loss.load_state_dict(checkpoint['loss_model_state_dict'])
             self.optim.load_state_dict(checkpoint['optimizer_state_dict'])
 
         ################################ logger
-        ctime = time.ctime()
-        if self.loss_options.color_in_cost:
-            mode_folder = 'with_color'
-        else:
-            mode_folder = 'wo_color'
-        ## SummaryWriter
-        self.writers = {}
-        for mode in ["train", "val"]:
-            self.writers[mode] = SummaryWriter(os.path.join('runs', mode_folder + '_' + ctime + '_' + mode ))
-        ## Save model if training, output features if evaluating
-        if not self.unet_options.continue_train: 
+        if not self.loss_options.test_no_log:
+            ctime = time.ctime()
+            if self.loss_options.color_in_cost:
+                mode_folder = 'with_color'
+            else:
+                mode_folder = 'wo_color'
+            ## SummaryWriter
+            self.writers = {}
+            for mode in ["train", "val"]:
+                self.writers[mode] = SummaryWriter(os.path.join('runs', mode_folder + '_' + ctime + '_' + mode ))
+            ## Save model if training, output features if evaluating
             if self.loss_options.run_eval:
                 self.output_folder = os.path.join('feature_output', mode_folder + '_' + ctime )
                 os.mkdir(self.output_folder)
@@ -129,6 +138,7 @@ class Trainer:
             else:
                 self.save_model_folder = os.path.join('saved_models', mode_folder + '_' + ctime  )
                 os.mkdir(self.save_model_folder)
+
         ## Save the options to a json file
         options = {}
         dict_unet = copy.deepcopy(self.unet_options.__dict__) # https://www.peterbe.com/plog/be-careful-with-using-dict-to-create-a-copy
@@ -137,11 +147,16 @@ class Trainer:
         options['unet_options'] = dict_unet
         options['loss_options'] = dict_loss
 
-        option_file_path = os.path.join('runs', mode_folder + '_' + ctime + '.json' )
-        with open(option_file_path, 'w') as option_file:
-            json.dump(options, option_file, indent=2)
+        ## save the initial setting for later use
+        self.dict_loss = dict_loss
 
-        
+        if not self.loss_options.test_no_log:
+            option_file_path = os.path.join('runs', mode_folder + '_' + ctime + '.json' )
+            with open(option_file_path, 'w') as option_file:
+                json.dump(options, option_file, indent=2)
+
+        torch.autograd.set_detect_anomaly(True)
+
         if self.loss_options.run_eval:
             self.eval()
         elif self.loss_options.trial_mode:
@@ -154,15 +169,21 @@ class Trainer:
             visualize_mode = iter_overall % 10 == 0
             eval_mode = False
         else:
-            visualize_mode = (iter_overall <= 100 and iter_overall % 10 == 0) or (iter_overall <= 1000 and iter_overall % 100 == 0) or (iter_overall > 1000 and iter_overall % 500 == 0)
+            visualize_mode = (iter_overall <= 100 and iter_overall % 20 == 0) or (iter_overall <= 1000 and iter_overall % 100 == 0) or (iter_overall <= 2000 and iter_overall % 200 == 0) or (iter_overall > 2000 and iter_overall % 500 == 0)
             eval_mode = iter_overall % 100 == 0
 
-        if visualize_mode and self.loss_options.effective_width <= 128:
+        if visualize_mode and (self.loss_options.effective_width <= 128 or self.unet_options.non_neg):
             self.model_overall.opt_loss.visualize_pca_chnl = True
             self.model_overall.model_loss.opt.visualize_pca_chnl = True
         else:
             self.model_overall.opt_loss.visualize_pca_chnl = False
             self.model_overall.model_loss.opt.visualize_pca_chnl = False
+
+        ### iterate over grad min and dist_min mode
+        if self.dict_loss['min_grad_mode'] and self.dict_loss['min_dist_mode']:
+            self.model_overall.model_loss.opt.min_grad_mode = iter_overall % 2 != 0
+            self.model_overall.model_loss.opt.min_dist_mode = iter_overall % 2 == 0
+            self.model_overall.model_loss.opt.set_loss_from_mode()
 
         return visualize_mode, eval_mode
 
@@ -248,12 +269,14 @@ class Trainer:
 
                 ### Generate feature map and point selection for images 
                 pt_sel(output, self.loss_options.top_k_list, self.loss_options.grid_list, self.loss_options.sample_aug_list)
-                pt_sel_log(sample_batch, output, self.output_folder, iter_overall, self.loss_options.top_k_list, self.loss_options.grid_list, self.loss_options.sample_aug_list)
+                if not self.loss_options.test_no_log:
+                    pt_sel_log(sample_batch, output, self.output_folder, iter_overall, self.loss_options.top_k_list, self.loss_options.grid_list, self.loss_options.sample_aug_list)
 
                 ### Log to tensorboard
-                if visualize_mode:
-                    visualize_to_tensorboard(sample_batch, output, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
-                scale_to_tensorboard(losses, self.writers['val'], self.unet_options, self.loss_options, iter_overall, output=output)
+                if not self.loss_options.test_no_log:
+                    if visualize_mode:
+                        visualize_to_tensorboard(sample_batch, output, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
+                    scale_to_tensorboard(losses, self.writers['val'], self.unet_options, self.loss_options, iter_overall, output=output)
                 
                 ### Optimize
                 loss = losses['final']
@@ -263,8 +286,9 @@ class Trainer:
 
                 iter_overall += 1
 
-        for mode in self.writers:
-            self.writers[mode].close()
+        if not self.loss_options.test_no_log:
+            for mode in self.writers:
+                self.writers[mode].close()
         
 
     def train(self):
@@ -309,9 +333,10 @@ class Trainer:
                 #     writer.add_graph(self.model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
 
                 ### Log to tensorboard
-                if visualize_mode:
-                    visualize_to_tensorboard(sample_batch, output, self.writers['train'], self.unet_options, self.loss_options, iter_overall)
-                scale_to_tensorboard(losses, self.writers['train'], self.unet_options, self.loss_options, iter_overall, output=output)
+                if not self.loss_options.test_no_log:
+                    if visualize_mode:
+                        visualize_to_tensorboard(sample_batch, output, self.writers['train'], self.unet_options, self.loss_options, iter_overall)
+                    scale_to_tensorboard(losses, self.writers['train'], self.unet_options, self.loss_options, iter_overall, output=output)
                 
                 ### Optimize
                 # optim.zero_grad()
@@ -367,7 +392,8 @@ class Trainer:
                     self.model_overall.train()
 
                     ### Log to tensorboard
-                    scale_to_tensorboard(losses, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
+                    if not self.loss_options.test_no_log:
+                        scale_to_tensorboard(losses, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
 
                     ### run eval_in_full_size
                     if self.loss_options.keep_scale_consistent:
@@ -381,30 +407,34 @@ class Trainer:
                                 _, output = self.model_overall(sample_val)    
                             self.model_overall.train()
 
-                            visualize_to_tensorboard(sample_val, output, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
+                            if not self.loss_options.test_no_log:
+                                visualize_to_tensorboard(sample_val, output, self.writers['val'], self.unet_options, self.loss_options, iter_overall)
+
                             self.mode_selection_after_eval()
 
                     
 
                 ### save trained model
-                if iter_overall % 2000 == 0:
-                    if self.unet_options.continue_train:
-                        model_path_save = os.path.join(self.save_model_folder, 'epoch{:0>2}_{:0>2}_continued.pth'.format(i_epoch, i_batch ) )
-                    else:
-                        model_path_save = os.path.join(self.save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, i_batch ) )
-                    torch.save({
-                        'epoch': i_epoch,
-                        'model_state_dict': self.model_overall.model_UNet.state_dict(),
-                        'loss_model_state_dict': self.model_overall.model_loss.state_dict(),
-                        'optimizer_state_dict': self.optim.state_dict(),
-                        'loss': loss
-                        }, model_path_save)
-                    print('Model saved to:', model_path_save)    
+                if not self.loss_options.test_no_log:
+                    if iter_overall % 2000 == 0:
+                        if self.loss_options.continue_train:
+                            model_path_save = os.path.join(self.save_model_folder, 'epoch{:0>2}_{:0>2}_continued.pth'.format(i_epoch, i_batch ) )
+                        else:
+                            model_path_save = os.path.join(self.save_model_folder, 'epoch{:0>2}_{:0>2}.pth'.format(i_epoch, i_batch ) )
+                        torch.save({
+                            'epoch': i_epoch,
+                            'model_state_dict': self.model_overall.model_UNet.state_dict(),
+                            'loss_model_state_dict': self.model_overall.model_loss.state_dict(),
+                            'optimizer_state_dict': self.optim.state_dict(),
+                            'loss': loss
+                            }, model_path_save)
+                        print('Model saved to:', model_path_save)    
 
                 iter_overall += 1
 
-        for mode in self.writers:
-            self.writers[mode].close()
+        if not self.loss_options.test_no_log:
+            for mode in self.writers:
+                self.writers[mode].close()
 
 
 

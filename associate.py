@@ -1,4 +1,8 @@
 #!/usr/bin/python
+## This file is modified from https://vision.in.tum.de/data/datasets/rgbd-dataset/tools, the file link: 
+## https://vision.in.tum.de/lib/exe/fetch.php?tok=5ec47e&media=https%3A%2F%2Fsvncvpr.in.tum.de%2Fcvpr-ros-pkg%2Ftrunk%2Frgbd_benchmark%2Frgbd_benchmark_tools%2Fsrc%2Frgbd_benchmark_tools%2Fassociate.py
+## to generate match.txt for each folder of sequences, showing matched pairs of rgb and depth images. 
+
 # Software License Agreement (BSD License)
 #
 # Copyright (c) 2013, Juergen Sturm, TUM
@@ -112,10 +116,13 @@ if __name__ == '__main__':
     parser.add_argument('--first_only', help='only output associated lines from first file', action='store_true')
     parser.add_argument('--offset', help='time offset added to the timestamps of the second file (default: 0.0)',default=0.0)
     parser.add_argument('--max_difference', help='maximally allowed time difference for matching entries (default: 0.02)',default=0.02)
+    parser.add_argument('--root_dir', help='path to data to associate')
     args = parser.parse_args()
 
 
-    root_dir = '/mnt/storage/minghanz_data/TUM/to_be_processed'
+    # root_dir = '/mnt/storage/minghanz_data/TUM/to_be_processed' # on hard drive on server
+    # root_dir = '/media/minghanz/Seagate_Backup_Plus_Drive/TUM/rgbd_dataset/untarred'
+    root_dir = args.root_dir
     folders = glob.glob(root_dir+'/rgbd*')
     for folder in folders :
         rgb_file = os.path.join(folder, 'rgb.txt')
@@ -132,6 +139,7 @@ if __name__ == '__main__':
             match_file.write( str_to_write )
 
         match_file.close()
+        print(folder, 'generated')
 
     # if args.first_only:
     #     for a,b in matches:

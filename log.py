@@ -8,7 +8,13 @@ import torchsnooper
 
 def scale_to_tensorboard(losses, writer, unet_options, loss_options, iter_overall, output=None):
     for item in losses:
-        writer.add_scalar('loss/{}'.format(item), losses[item], iter_overall)
+        if item == 'final':
+            if loss_options.min_grad_mode:
+                writer.add_scalar('loss/final_grad', losses[item], iter_overall)
+            if loss_options.min_dist_mode:
+                writer.add_scalar('loss/final_dist', losses[item], iter_overall)
+        else:
+            writer.add_scalar('loss/{}'.format(item), losses[item], iter_overall)
 
     if output is not None:
         feature1 = output[0]['feature_normalized']
@@ -96,6 +102,16 @@ def visualize_to_tensorboard(sample_batch, output, writer, unet_options, loss_op
 
         writer.add_image('img1/mask',grid1_mask, iter_overall)
         writer.add_image('img2/mask',grid2_mask, iter_overall)
+    
+    if loss_options.samp_pt:
+        mask_1 = output[0]['mask']
+        mask_2 = output[1]['mask']
+
+        grid1_mask = torchvision.utils.make_grid(mask_1)
+        grid2_mask = torchvision.utils.make_grid(mask_2)
+
+        writer.add_image('img1/mask',grid1_mask, iter_overall)
+        writer.add_image('img2/mask',grid2_mask, iter_overall)
 
     if loss_options.run_eval:
         for item in output[0]:
@@ -105,24 +121,36 @@ def visualize_to_tensorboard(sample_batch, output, writer, unet_options, loss_op
                 writer.add_image(item, grid1_mask, iter_overall)
 
     if loss_options.pca_in_loss or loss_options.visualize_pca_chnl:
-        feature1_chnl3 = output[0]['feature_chnl3']
-        feature2_chnl3 = output[1]['feature_chnl3']
+        if unet_options.non_neg:
+            list_cnl = [3, 6]
+        else:
+            list_cnl = [3]
+        for cnl in list_cnl:
+            name_cnl = 'feature_chnl{}'.format(cnl)
+            
+            feature1_chnl3 = output[0][name_cnl]
+            feature2_chnl3 = output[1][name_cnl]
 
-        # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
-        feat1_pos = vis_feat(feature1_chnl3)
-        feat1_neg = vis_feat(feature1_chnl3, neg=True)
-        feat2_pos = vis_feat(feature2_chnl3)
-        feat2_neg = vis_feat(feature2_chnl3, neg=True)
+            # The tensorboard visualize value in (-1,0) the same as in (0, 1), e.g. -1.9 = -0.9 = 0.1 = 1.1, 1 is the brightest
+            feat1_pos = vis_feat(feature1_chnl3)
+            feat2_pos = vis_feat(feature2_chnl3)
 
-        grid1pos = torchvision.utils.make_grid(feat1_pos)
-        grid1neg = torchvision.utils.make_grid(feat1_neg)
-        grid2pos = torchvision.utils.make_grid(feat2_pos)
-        grid2neg = torchvision.utils.make_grid(feat2_neg)
+            grid1pos = torchvision.utils.make_grid(feat1_pos)
+            grid2pos = torchvision.utils.make_grid(feat2_pos)
 
-        writer.add_image('img1/feat_pos',grid1pos, iter_overall)
-        writer.add_image('img1/feat_neg',grid1neg, iter_overall)
-        writer.add_image('img2/feat_pos',grid2pos, iter_overall)
-        writer.add_image('img2/feat_neg',grid2neg, iter_overall)
+            if unet_options.non_neg:
+                writer.add_image('img1/'+name_cnl, grid1pos, iter_overall)
+                writer.add_image('img2/'+name_cnl, grid2pos, iter_overall)
+            else:
+                writer.add_image('img1/feat_pos',grid1pos, iter_overall)
+                writer.add_image('img2/feat_pos',grid2pos, iter_overall)
+
+                feat1_neg = vis_feat(feature1_chnl3, neg=True)
+                feat2_neg = vis_feat(feature2_chnl3, neg=True)
+                grid1neg = torchvision.utils.make_grid(feat1_neg)
+                grid2neg = torchvision.utils.make_grid(feat2_neg)
+                writer.add_image('img1/feat_neg',grid1neg, iter_overall)
+                writer.add_image('img2/feat_neg',grid2neg, iter_overall)
                 
         # if iter_overall == 0:
         #     writer.add_graph(model_overall, input_to_model=(img1,img2,dep1,dep2,idep1, idep2, pose1_2, img1_raw, img2_raw) )
@@ -329,8 +357,8 @@ def pt_sel_log(sample_batch, output, output_folder, iter_overall, k_list, grid_l
     for i in range(len(feat_np1)):
         feat_np1[i].tofile(os.path.join(output_folder, 'feature_map', 'feat_'+imgname[i] +'.bin') )
         print(iter_overall, 'imgname', i, ':', imgname[i])
-        # print("feat_np1[{}]: [{:.3f}, {:.3f}], {}".format(i, np.min(feat_np1[i]), np.max(feat_np1[i]), feat_np1[i].dtype))
-        # print("feature1[{}]: [{:.3f}, {:.3f}]".format(i, torch.min(feature1[i]), torch.max(feature1[i])))
+        print("feat_np1[{}]: [{:.3f}, {:.3f}], {}".format(i, np.min(feat_np1[i]), np.max(feat_np1[i]), feat_np1[i].dtype))
+        print("feature1[{}]: [{:.3f}, {:.3f}]".format(i, torch.min(feature1[i]), torch.max(feature1[i])))
 
     for k in k_list:
         for g in grid_list:

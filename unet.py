@@ -3,7 +3,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+import torchsnooper
 
 class UNet(nn.Module):
     def __init__(
@@ -15,6 +15,7 @@ class UNet(nn.Module):
         padding=False,
         batch_norm=False,
         up_mode='upconv',
+        non_neg=False
     ):
         """
         Implementation of
@@ -61,7 +62,13 @@ class UNet(nn.Module):
             )
             # prev_channels = 2 ** (wf + i)
 
-        self.last = nn.Conv2d(prev_channels, n_classes, kernel_size=1)
+        if non_neg:
+            last = []
+            last.append( nn.Conv2d(prev_channels, n_classes, kernel_size=1) )
+            last.append(nn.ReLU())
+            self.last = nn.Sequential(*last)
+        else:
+            self.last = nn.Conv2d(prev_channels, n_classes, kernel_size=1)
 
     def forward(self, x):
         blocks = []

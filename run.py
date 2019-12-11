@@ -51,7 +51,7 @@ def split_train_val(img_pose_dataset, validation_split, batch_size=1):
 class Trainer:
     def __init__(self):
         ################################# options ## CARLA uses cuda:1
-        self.device = torch.device('cuda:1' if torch.cuda.is_available()else 'cpu')
+        self.device = torch.device('cuda:0' if torch.cuda.is_available()else 'cpu')
 
         manual_opt = ManualOptions()
         over_opt = manual_opt.parse()
@@ -129,7 +129,7 @@ class Trainer:
             ## Save model if training, output features if evaluating
             if self.loss_options.run_eval:
                 self.output_folder = os.path.join('feature_output', mode_folder + '_' + ctime )
-                os.mkdir(self.output_folder)
+                os.makedirs(self.output_folder)
                 os.makedirs( os.path.join(self.output_folder, 'feature_map') )
                 for k in self.loss_options.top_k_list:
                     for g in self.loss_options.grid_list:

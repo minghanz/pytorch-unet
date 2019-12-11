@@ -1,7 +1,7 @@
 import torch
 
 # import sub_cuda
-import sub_norm_cuda, cross_prod_cuda, cross_subtract_cuda
+import sub_norm_cuda, cross_prod_cuda, cross_subtract_cuda, sub_norm_cuda_half, sub_norm_cuda_half_paral
 from torch.autograd import Function
 import torch.nn.functional as F
 import torch.nn as nn
@@ -13,7 +13,7 @@ from dataloader import pose_from_euler_t_Tensor
 class SubNormFunction(Function):
     @staticmethod
     def forward(ctx, x1, x2):
-        outputs = sub_norm_cuda.forward(x1, x2)
+        outputs = sub_norm_cuda_half_paral.forward(x1, x2)
         ctx.save_for_backward(x1, x2)
         return outputs
 
@@ -21,7 +21,7 @@ class SubNormFunction(Function):
     def backward(ctx, dy):
         x1, x2 = ctx.saved_tensors
 
-        dx1, dx2 = sub_norm_cuda.backward(dy, x1, x2)
+        dx1, dx2 = sub_norm_cuda_half_paral.backward(dy, x1, x2)
         return dx1, dx2
 
 class CrossProdFunction(Function):
@@ -102,17 +102,38 @@ def kern_mat(pcl_1, pcl_2, dist_coef=1e-1):
         # pcl_diff_exp = torch.exp(-torch.norm(pcl_diff, dim=1) * dist_coef  )
 
         # print(pcl_1.shape, pcl_2.shape)
+        # pcl_diff = SubNormFunction.apply(pcl_1.to(dtype=torch.float16).contiguous(), pcl_2.to(dtype=torch.float16).contiguous())
         pcl_diff = SubNormFunction.apply(pcl_1.contiguous(), pcl_2.contiguous())
         # assert not torch.isnan(pcl_diff).any()
         # assert not torch.isinf(pcl_diff).any()
         # pcl_diff_exp = torch.exp(-pcl_diff * dist_coef)
+
+        thre_t = 8.315e-3
+        thre_d = -2.0 * dist_coef * dist_coef * np.log(thre_t)
+        
+        # valid_idx = (pcl_diff < thre_d).nonzero().transpose(0,1) # z*n matrix, z: # of non zero elements, n: matrix dim
+        # valid_val = pcl_diff[valid_idx.split(1,dim=0)].squeeze()
+        # pcl_diff_sparse = torch.sparse.FloatTensor(valid_idx, valid_val, pcl_diff.size())
+
         pcl_diff_exp = torch.exp(-pcl_diff / (2 * dist_coef * dist_coef) )
+        # pcl_diff_zeros = torch.zeros_like(pcl_diff_exp)
+        pcl_diff_exp = torch.where(pcl_diff_exp >= thre_t, pcl_diff_exp, torch.zeros_like(pcl_diff_exp) )
+        # pcl_diff_exp[pcl_diff_exp < thre_t] = 0 # inplace operation will cause back prop error
+        
+        # valid_idx = (pcl_diff_exp > thre_t).nonzero().transpose(0,1) # z*n matrix, z: # of non zero elements, n: matrix dim
+        # print("dist_coef", dist_coef)
+        # print("valid_idx size", valid_idx.shape)
+        # print("total size", pcl_diff_exp.shape[-1]*pcl_diff_exp.shape[-2])
+        # valid_val = pcl_diff_exp[valid_idx.split(1,dim=0)].squeeze()
+        # pcl_diff_exp_sparse = torch.sparse.FloatTensor(valid_idx, valid_val, pcl_diff_exp.size())
 
         # pcl_1_expand = pcl_1.unsqueeze(-1).expand(B, C, N1, N2)
         # pcl_2_expand = pcl_2.unsqueeze(-2).expand(B, C, N1, N2)
         # pcl_diff_exp = torch.exp(-torch.norm(pcl_1_expand - pcl_2_expand, dim=1) * dist_coef  ) # B*N1*N2 
 
     return pcl_diff_exp
+    # return pcl_diff_exp_sparse
+    # return valid_idx, valid_val
 
 def gramian(fea_flat_1, fea_flat_2, norm_mode, kernalize, norm_dim, dist_coef=1e0):
     """

@@ -9,7 +9,7 @@ class UnetOptions:
         self.up_mode='upconv'
 
         self.batch_norm=True
-        self.non_neg = False
+        self.non_neg = True
 
         self.pose_predict_mode = False
         self.pretrained_mode = False
@@ -32,7 +32,7 @@ class UnetOptions:
 class LossOptions:
     def __init__(self, unetoptions):
         
-        self.color_in_cost = True
+        self.color_in_cost = False
 
         # self.diff_mode = False
         # self.min_grad_mode = True
@@ -69,9 +69,9 @@ class LossOptions:
         self.opt_unet = unetoptions
 
         self.dist_coef = {}
-        self.dist_coef['xyz_align'] = 0.5 # 0.1
-        self.dist_coef['xyz_noisy'] = 0.5 # 0.1
-        self.dist_coef['xyz'] = 0.5 # 0.1
+        self.dist_coef['xyz_align'] = 0.2 # 0.1
+        self.dist_coef['xyz_noisy'] = 0.2 # 0.1
+        self.dist_coef['xyz'] = 0.2 # 0.1
         self.dist_coef['img'] = 0.5 # originally I used 0.1, but Justin used 0.5 here
         # self.dist_coef['feature'] = 0.1 ###?
         self.dist_coef_feature = 0.1
@@ -83,7 +83,7 @@ class LossOptions:
         self.effective_batch_size = 2
         self.iter_between_update = int(self.effective_batch_size / self.batch_size)
         self.epochs = 1
-        self.total_iters = 6000
+        self.total_iters = 20000
 
 
     def set_loss_from_options(self):
@@ -144,9 +144,12 @@ class LossOptions:
             self.feat_scale_after_normalize = 1e-1 # sdv 1e-1
             self.reg_norm_mode = False
         else: # dot product
-            self.sparsify_mode = 2 # norm_dim=2, centralize, doesn't normalize (use the norm as loss)
+            self.sparsify_mode = 2 # 3, norm_dim=2, centralize, doesn't normalize (use the norm as loss)
             self.L_norm = (1,2) # (1,2) # mean L2 norm of all pixel features
-            self.feat_scale_after_normalize = 1e0
+            if self.self_sparse_mode:
+                self.feat_scale_after_normalize = 1e-1
+            else:
+                self.feat_scale_after_normalize = 1e0
             self.reg_norm_mode = False
 
         self.feat_norm_per_pxl = 1 ## the L2 norm of feature vector of a pixel (pre_gramian). 1 means this value has no extra effect
@@ -165,6 +168,8 @@ class LossOptions:
             else:
                 if self.kernalize:
                     self.loss_weight.extend([1, 1e-5]) # 1e6, 1 # 1e-4: dots, 1e-6: blocks
+                elif self.self_trans:
+                    self.loss_weight.extend([0,-1e-6])
                 else:
                     self.loss_weight.extend([1, 1e-6]) # 1e6, 1
         if self.diff_mode:
@@ -182,6 +187,10 @@ class LossOptions:
         if self.reg_norm_mode:
             self.loss_item.append("feat_norm")
             self.loss_weight.append(1e-1) # self.reg_norm_weight
+
+        if self.self_sparse_mode:
+            self.loss_item.extend(["cos_sim", "func_dist"])
+            self.loss_weight.extend([0, 1]) # 1e6, 1
 
         self.samp_pt = self.min_grad_mode
         return

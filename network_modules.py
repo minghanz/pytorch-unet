@@ -340,8 +340,15 @@ class innerProdLoss(nn.Module):
 
             if not self.opt.no_inner_prod:
                 if not self.opt.opt_unet.pose_predict_mode:
-                    loss_single = self.calc_loss_diff_grad(flat_sel, pose1_2 )
-                    loss_single['feat_norm'] = flat_sel[0]['feature_norm_sum'] + flat_sel[1]['feature_norm_sum']
+                    if self.opt.self_sparse_mode:
+                        loss_single = self.calc_loss_self_sparse(flat_sel)
+                        loss_single['feat_norm'] = flat_sel[0]['feature_norm_sum']
+                    elif self.opt.self_trans:
+                        loss_single = self.calc_loss_diff_grad(flat_sel )
+                        loss_single['feat_norm'] = flat_sel[0]['feature_norm_sum']
+                    else:
+                        loss_single = self.calc_loss_diff_grad(flat_sel, pose1_2 )
+                        loss_single['feat_norm'] = flat_sel[0]['feature_norm_sum'] + flat_sel[1]['feature_norm_sum']
                     # if self.opt.min_dist_mode:
                     #     if self.opt.diff_mode:
                     #         loss_single, loss_single_noisy = self.calc_loss(flat_sel, pose1_2)
@@ -514,7 +521,7 @@ class innerProdLoss(nn.Module):
                     fea_norm = torch.mean(torch.abs(fea_centered), dim=self.norm_dim, keepdim=True) # L1 norm across channels # B*1*N / pixels # B*C*1 / pixel and channels * B*1*1
                 elif self.opt.L_norm == 2:
                     # fea_norm = torch.norm(fea_centered, dim=self.norm_dim, keepdim=True) / math.sqrt(float(fea_centered.shape[self.norm_dim] - 1) ) # standard deviation #L2 norm across channels # B*1*N
-                    fea_norm = torch.sqrt( torch.var(fea_centered, dim=self.norm_dim, keepdim=True) )  # equivalent to the above
+                    fea_norm = torch.sqrt( torch.var(fea_centered, dim=self.norm_dim, keepdim=True) )  # equivalent to the above when feature is centered
                     # print("fea_norm12", fea_norm, fea_norm2)
                 elif self.opt.L_norm == (1,2):
                     fea_norm = torch.mean( torch.norm(fea_centered, dim=1, keepdim=True), dim=2, keepdim=True ) # L1 of L2 of each pixels # B*1*1
@@ -646,27 +653,91 @@ class innerProdLoss(nn.Module):
                     # outputs[i]['feature_chnl12'] = feature[:,9:12,:,:]
 
         return 
-    
-    def calc_loss_diff_grad(self, flat_sel, pose1_2 ):
-        ### 1. Calculate gramian of each item
-        need_align = self.opt.min_dist_mode or self.opt.diff_mode
-        need_noisy = self.opt.diff_mode or self.opt.min_grad_mode
 
-        if need_noisy:
-            pose1_2_noisy = self.xyz_align_with_pose(flat_sel[0], flat_sel[1], pose1_2, need_noisy)
+    def calc_loss_self_sparse(self, flat_sel):
+        item_to_calc_gram = ['feature']
+        if self.opt.color_in_cost:
+            item_to_calc_gram.append('img')
+
+        item_to_calc_gram.append('xyz')
+
+        flat_sel_self = {}
+        flat_sel_self[0] = flat_sel[0].copy()
+        flat_sel_self[1] = flat_sel_self[0].copy()
+        flat_sel_self[1]['feature_normalized'] = \
+            math.sqrt(1/self.opt.opt_unet.n_classes) * torch.ones((1,self.opt.opt_unet.n_classes,1), device=self.device).expand_as(flat_sel_self[0]['feature_normalized'])
+
+        list_of_ij = [(0,0), (1,1), (0,1)]
+
+        gramians = {}
+
+        gramians['feature'] = {}
+        self.calc_gramian(flat_sel_self, 'feature', gramians['feature'], list_of_ij)
+
+        gramians['xyz'] = {}
+        self.calc_gramian(flat_sel_self, 'xyz', gramians['xyz'], [(0,1)] )
+        gramians['xyz'][(1,1)] = gramians['xyz'][(0,1)]
+        gramians['xyz'][(0,0)] = gramians['xyz'][(0,1)]
+        
+        gramians['img'] = {}
+        self.calc_gramian(flat_sel_self, 'img', gramians['img'], [(0,1)] )
+        gramians['img'][(1,1)] = gramians['img'][(0,1)]
+        gramians['img'][(0,0)] = gramians['img'][(0,1)]
+
+        ### 2. Calculate inner product
+        inner_prods = {}
+        item_to_calc_innerp = item_to_calc_gram
+        self.calc_inner_prod(inner_prods, gramians, flat_sel_self, item_to_calc_innerp, list_of_ij )
+        losses_self = self.calc_loss_from_inner_prod( inner_prods )
+
+        return losses_self
+        
+    def calc_loss_diff_grad(self, flat_sel_input, pose1_2=None ):
+        ### 1. Calculate gramian of each item
+        need_self_noise = self.opt.self_trans
+        need_align = (not self.opt.self_trans) and (self.opt.min_dist_mode or self.opt.diff_mode)
+        need_noisy = (not self.opt.self_trans) and (self.opt.diff_mode or self.opt.min_grad_mode)
+
+        if not need_self_noise : # pose1_2 is not None:
+            if need_noisy:
+                pose1_2_noisy = self.xyz_align_with_pose(flat_sel_input[0], flat_sel_input[1], pose1_2, need_noisy)
+            else:
+                self.xyz_align_with_pose(flat_sel_input[0], flat_sel_input[1], pose1_2, need_noisy)
+            flat_sel = {}
+            flat_sel[0] = flat_sel_input[0]
+            flat_sel[1] = flat_sel_input[1]
         else:
-            self.xyz_align_with_pose(flat_sel[0], flat_sel[1], pose1_2, need_noisy)
+            flat_sel = {}
+            flat_sel[0] = flat_sel_input[0]
+            flat_sel[1] = flat_sel_input[0].copy()
+            # trans_noise = torch.randn((3), dtype=torch.float, device=self.device) * 0.03
+            # flat_sel[1]['xyz'] = flat_sel[0]['xyz'] + trans_noise.view(1,3,1).expand_as(flat_sel[0]['xyz'])
+            flat_sel[1]['xyz'] = flat_sel[0]['xyz'] * 1.01
+
+        if self.opt.visualize_pcd:
+            print('now original')
+            draw3DPts(flat_sel[0]['xyz'], flat_sel[1]['xyz'], flat_sel[0]['img'], flat_sel[1]['img'])
+            if not need_self_noise:
+                print('now matched')
+                draw3DPts(flat_sel[0]['xyz_align'], flat_sel[1]['xyz_align'], flat_sel[0]['img'], flat_sel[1]['img'])
+                if need_noisy:
+                    print('now noisy')
+                    draw3DPts(flat_sel[0]['xyz_noisy'], flat_sel[1]['xyz_noisy'], flat_sel[0]['img'], flat_sel[1]['img'])
+
+        
 
         item_to_calc_gram = ['feature']
         if self.opt.color_in_cost:
             item_to_calc_gram.append('img')
 
-        if need_align:
+        if need_self_noise:
+            item_to_calc_gram.append('xyz')
+        elif need_align:
             item_to_calc_gram.append('xyz_align')
         else:
             item_to_calc_gram.append('xyz_noisy')
 
-        if need_align:
+        if need_align or need_self_noise:
             list_of_ij = [(0,0), (1,1), (0,1)]
         else:
             list_of_ij = [(0,1)]
@@ -685,17 +756,17 @@ class innerProdLoss(nn.Module):
 
         ### 2. Calculate inner product
         inner_prods_noisy_perp = None
-        if need_align:
+        if need_align or need_self_noise:
             inner_prods = {}
             item_to_calc_innerp = item_to_calc_gram
             self.calc_inner_prod(inner_prods, gramians, flat_sel, item_to_calc_innerp, list_of_ij )
-            losses_align = self.calc_loss_from_inner_prod( inner_prods, flat_sel )
+            losses_align = self.calc_loss_from_inner_prod( inner_prods )
 
             if self.opt.diff_mode:
                 inner_prods_noisy = inner_prods.copy()
                 item_to_calc_innerp = ['xyz_noisy' if item == 'xyz_align' else item for item in item_to_calc_gram ]
                 inner_prods_noisy_perp = self.calc_inner_prod(inner_prods_noisy, gramians, flat_sel, item_to_calc_innerp, [(0,1)] )
-                losses_noisy = self.calc_loss_from_inner_prod( inner_prods_noisy, flat_sel )
+                losses_noisy = self.calc_loss_from_inner_prod( inner_prods_noisy )
         
 
         if self.opt.min_grad_mode:
@@ -900,12 +971,6 @@ class innerProdLoss(nn.Module):
         flat_sel_1['xyz_align'] = flat_sel_1['xyz']
         flat_sel_2['xyz_align'] = xyz2_trans
 
-        if self.opt.visualize_pcd:
-            print('now original')
-            draw3DPts(xyz1, xyz2, flat_sel_1['img'], flat_sel_2['img'])
-            print('now matched')
-            draw3DPts(xyz1, xyz2_trans, flat_sel_1['img'], flat_sel_2['img'])
-
         if need_noisy:
             if self.opt.source=='TUM':
                 ### 1. perturb the scenario points by moving them to the center first
@@ -922,12 +987,6 @@ class innerProdLoss(nn.Module):
             flat_sel_1['xyz_noisy'] = flat_sel_1['xyz']
             flat_sel_2['xyz_noisy'] = xyz2_trans_noisy  
             # print( "The same 1 ???????????", flat_sel_2['xyz_noisy'] - flat_sel_2['xyz_align'] )
-
-
-            if self.opt.visualize_pcd:
-                print('now noisy')
-                print(pose1_2_noisy)
-                draw3DPts(xyz1, xyz2_trans_noisy, flat_sel_1['img'], flat_sel_2['img'])
                 
             return pose1_2_noisy
         
@@ -1045,14 +1104,9 @@ class innerProdLoss(nn.Module):
         #     list_of_ij =[(0,1)]
         inner_prods_perp = {}
         for ij in list_of_ij:
-            gramian_list = [gramians[item][ij] for item in item_to_calc_innerp ]
-            # gramian_list = [gramian[ij] for gramian in gramians.values() ]
-            n_gram = len(gramian_list)
 
-            inn_prod = gramian_list[0]
-            if n_gram > 1:
-                for k in range(1, n_gram):
-                    inn_prod = inn_prod * gramian_list[k]
+            inn_prod = self.inner_prod_from_gramians(gramians, ij, item_to_calc_innerp )
+
             if self.opt.opt_unet.weight_map_mode:
                 (i,j) = ij
                 inn_prod = inn_prod * flat_sel[i]['feature_w'].transpose(1, 2) * flat_sel[j]['feature_w']
@@ -1096,12 +1150,27 @@ class innerProdLoss(nn.Module):
 
         return inner_prods_perp
 
-    def calc_loss_from_inner_prod(self, inner_prods, flat_sel):
+    def inner_prod_from_gramians(self, gramians, ij, item_to_calc_innerp=None ):
+        if item_to_calc_innerp is not None:
+            gramian_list = [gramians[item][ij] for item in item_to_calc_innerp ]
+        else:
+            gramian_list = [gramian[ij] for gramian in gramians.values() ]
+
+        n_gram = len(gramian_list)
+
+        inn_prod = gramian_list[0]
+        if n_gram > 1:
+            for k in range(1, n_gram):
+                inn_prod = inn_prod * gramian_list[k]
+
+        return inn_prod
+
+    def calc_loss_from_inner_prod(self, inner_prods):
         losses = {}
         losses['inner_prod'] = inner_prods[(0,1)]
         # losses['feat_norm'] = flat_sel[0]['feature_norm_sum'] + flat_sel[1]['feature_norm_sum']
 
-        if self.opt.min_dist_mode or self.opt.diff_mode:
+        if self.opt.min_dist_mode or self.opt.diff_mode or self.opt.self_sparse_mode:
             losses['inner_prod_0_0'] = inner_prods[(0,0)]
             losses['inner_prod_1_1'] = inner_prods[(1,1)]
             losses['func_dist'] = inner_prods[(0,0)] + inner_prods[(1,1)] - 2 * inner_prods[(0,1)]

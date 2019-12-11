@@ -13,6 +13,8 @@ class ManualOptions:
         self.parser.add_argument('--pretrained_weight_path', type=str)
         self.parser.add_argument('--dist_coef_feature', type=float, default=0.1)
         # self.parser.add_argument('--reg_norm_weight', type=float, default=1)
+        self.parser.add_argument('--self_sparse_mode', action='store_true')
+        self.parser.add_argument('--self_trans', action='store_true')
         
         
 

@@ -1,7 +1,7 @@
 import torch
 
 # import sub_cuda
-import sub_norm_cuda, cross_prod_cuda, cross_subtract_cuda, sub_norm_cuda_half, sub_norm_cuda_half_paral
+import cross_prod_cuda, cross_subtract_cuda, sub_norm_cuda_half_paral #sub_norm_cuda sub_norm_cuda_half 
 from torch.autograd import Function
 import torch.nn.functional as F
 import torch.nn as nn
@@ -355,6 +355,72 @@ def rgb_to_hsv(image, flat=False):
     else:
         return torch.stack([h, s, v], dim=-2)
 
+def hsv_to_rgb(image, flat=False):
+    """Convert an HSV image to RGB.
+
+    Args:
+        input (torch.Tensor): HSV Image to be converted to RGB.
+        flat: True if input B*C*N, False if input B*C*H*W
+
+    Returns:
+        torch.Tensor: RGB version of the image.
+    https://gist.github.com/mathebox/e0805f72e7db3269ec22
+    https://github.com/scikit-image/scikit-image/blob/master/skimage/color/colorconv.py#L214
+    
+    """
+
+    if not torch.is_tensor(image):
+        raise TypeError("Input type is not a torch.Tensor. Got {}".format(
+            type(image)))
+
+    if not flat:
+        if len(image.shape) < 3 or image.shape[-3] != 3:
+            raise ValueError("Input size must have a shape of (*, 3, H, W) given flat=False. Got {}"
+                            .format(image.shape))
+    else:
+        if len(image.shape) < 2 or image.shape[-2] != 3:
+            raise ValueError("Input size must have a shape of (*, 3, N) given flat=True. Got {}"
+                            .format(image.shape))
+
+    if not flat:
+        h: torch.Tensor = image[..., 0, :, :]
+        s: torch.Tensor = image[..., 1, :, :]
+        v: torch.Tensor = image[..., 2, :, :]
+    else:
+        h: torch.Tensor = image[..., 0, :]
+        s: torch.Tensor = image[..., 1, :]
+        v: torch.Tensor = image[..., 2, :]
+
+    i = torch.floor(h*6)
+    f = h*6 - i
+    p = v * (1-s)
+    q = v * (1-f*s)
+    t = v * (1-(1-f)*s)
+
+    rgbs = {}
+    rgbs[0] = torch.stack((v, t, p), dim=1)
+    rgbs[1] = torch.stack((q, v, p), dim=1)
+    rgbs[2] = torch.stack((p, v, t), dim=1)
+    rgbs[3] = torch.stack((p, q, v), dim=1)
+    rgbs[4] = torch.stack((t, p, v), dim=1)
+    rgbs[5] = torch.stack((v, p, q), dim=1)
+    
+    rgb = torch.zeros_like(image)
+    iexpand = i.unsqueeze(1).expand_as(image)
+    for idd in range(6):
+        rgb = torch.where(iexpand == idd, rgbs[idd], rgb)
+    rgb = torch.where(iexpand == 6, rgbs[0], rgb)
+
+    # r, g, b = [
+    #     (v, t, p),
+    #     (q, v, p),
+    #     (p, v, t),
+    #     (p, q, v),
+    #     (t, p, v),
+    #     (v, p, q),
+    # ][int(i%6)]
+
+    return rgb
 
 
 def gen_rand_pose(source, noise_trans_scale, device):
